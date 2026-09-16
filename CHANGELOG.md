@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-09-16
+
+The first stable 0.4.0. It carries everything in v0.4.0-rc.1 below — one-command
+onboarding via `visage onboard`, the configurable PAM timeout, the first integration
+tests, and the repaired tag-triggered release pipeline — plus the changes listed here.
+
 ### Added
 
 - **IR emitter quirk for the Lenovo ThinkPad P14s Gen 4 — Syntek `174f:11a8`.** The

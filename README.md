@@ -19,7 +19,7 @@ Linux-PAM — no kernel patches, no modified sudo.
 
 ## Status
 
-**v0.4.0-rc.1 — feature-complete, running on real hardware.**
+**v0.4.0 — feature-complete, running on real hardware.**
 
 Enrollment, verification, PAM integration for `sudo` and lock screens, systemd hardening,
 D-Bus access control, package lifecycle and suspend/resume are implemented and tested end
@@ -27,7 +27,9 @@ to end. **`sudo visage onboard`** takes a fresh machine to working face auth in 
 
 Since v0.3.6: one-command onboarding, the first hardware validation of passive liveness, a
 configurable PAM timeout, the first integration tests, Fedora RPM packaging, and three more
-IR emitter quirks. See [CHANGELOG](CHANGELOG.md) for the full history.
+IR emitter quirks. v0.4.0 added `PreviewFrame`, so an enrolling client can show you what the
+camera sees, and a pre-install hardware check you can run before installing anything. See
+[CHANGELOG](CHANGELOG.md) for the full history.
 
 > ⚠️ **Keep a password fallback. Do not make this your only authentication factor yet.**
 > On its first hardware spoof validation, passive liveness did **not** discriminate: a
@@ -61,6 +63,13 @@ IR emitter quirks. See [CHANGELOG](CHANGELOG.md) for the full history.
 | `visage-core` | Library | Face detection (SCRFD) + recognition (ArcFace) via ONNX |
 | `visage-hw` | Library | Camera capture, IR emitter control, hardware quirks DB |
 | `visage-models` | Library | ONNX model manifest, pinned SHA-256 checksums, integrity verification |
+| `visage-ipc` | Library | The D-Bus client surface, defined once and shared by every client |
+
+Two enrollment front-ends live in the tree as **prototypes** and are deliberately not
+packaged: `visage-tui` (`visage-enroll`, ratatui) and `visage-gui` (`visage-enroll-gui`,
+egui). Both render the `PreviewFrame` feed live so you can see yourself while enrolling.
+They exist to settle which shape actually helps a first-time user, by use rather than by
+argument; one will be kept and the other dropped.
 
 ## Quick Start (Build from Source)
 

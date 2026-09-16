@@ -100,11 +100,25 @@ rustPlatform.buildRustPackage {
   # See the ortStatic note above. This is what stops ort-sys reaching the network.
   ORT_LIB_LOCATION = "${ortStatic}";
 
-  # cargo test runs unit tests; integration tests require a camera + daemon
+  # The whole workspace — this said `--workspace --lib`, which was close to
+  # vacuous.
+  #
+  # `--lib` selects ONLY library targets. `visaged`, `visage-tui` and
+  # `visage-gui` are binary-only crates, and every `tests/*.rs` is a `--test`
+  # target, so of 127 test functions in the workspace it ran roughly 67 and
+  # silently skipped the rest — including all four contract tests, which are
+  # precisely the ones guarding packaging and the D-Bus wire format. A green
+  # `nix build` said nothing about them, which is worse than not running them.
+  #
+  # Nothing here needs hardware. The three camera-dependent tests in
+  # `tests/daemon_lifecycle.rs` are `#[ignore]`d, so they skip in the sandbox
+  # without a `/dev/video*`; the contract tests read source files, which are
+  # present in the build directory. `--no-fail-fast` so one failing crate still
+  # yields a full picture rather than stopping at the first.
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    cargo test --workspace --lib
+    cargo test --workspace --no-fail-fast
     runHook postCheck
   '';
 

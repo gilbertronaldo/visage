@@ -275,6 +275,52 @@ cargo build -p visage-cli --release
 ./target/release/visage discover
 ```
 
+### Building with Nix
+
+```bash
+nix build .#default   # builds the package AND runs the full workspace test suite
+nix develop           # shell with the toolchain, rustfmt, clippy, cargo-deb
+```
+
+The package's check phase runs `cargo test --workspace`. It used to run
+`cargo test --workspace --lib`, which selects *only* library targets — that
+silently skipped every `tests/*.rs` integration target and every binary-only
+crate, roughly half the suite. If you narrow it again, say so in the PR.
+
+The three camera-dependent tests are `#[ignore]`d and need real hardware:
+
+```bash
+cargo test -p visaged --test daemon_lifecycle -- --ignored --nocapture
+```
+
+⛔ **Known upstream breakage — crates.io refuses curl's default User-Agent.**
+nixpkgs' `fetchurl` uses it, and `importCargoLock` gives each crate exactly one
+URL (`https://crates.io/api/v1/crates/<name>/<ver>/download`), so **any crate not
+already in a binary cache fails to download.** The error reads "cannot download …
+from any mirror", which is misleading: there is one URL, not a mirror set.
+
+Measured 2026-09-16 against the same URL, varying only the User-Agent — curl's
+default: `403`. `cargo 1.89.0` or `Mozilla/5.0`: `302` to `static.crates.io`,
+which serves normally.
+
+These fetches are fixed-output derivations, so the content may come from anywhere
+and Nix still verifies every hash. To unblock a build, seed the missing ones:
+
+1. `nix derivation show -r <top .drv>`, keeping entries whose
+   `structuredAttrs.name` starts with `crate-`.
+2. Resolve their outputs with `nix-store -q --outputs`. ⚠️ The keys from
+   `derivation show` are **bare basenames** — prefix them with `/nix/store/` or
+   Nix resolves them against your working directory.
+3. For each missing output: `curl -sSL -A 'cargo 1.89.0' <its url>`, check the
+   sha256 against `structuredAttrs.outputHash`, then `nix-store --add-fixed
+   sha256 <file>` with the file named exactly `structuredAttrs.name`.
+
+⚠️ Do not enumerate with `nix build --dry-run`. It reported 29 missing crates when
+the real number was 450, and later reported zero while a build was concurrently
+failing on one. Walk the derivation closure instead. Note also that a fixed-output
+derivation's `outputs` entry has **no `path` key**, so a census written as
+`.get('path')` skips every entry and reports a confident, wrong "0 missing".
+
 See [docs/operations-guide.md](docs/operations-guide.md) for installation and setup.
 See [docs/hardware-compatibility.md](docs/hardware-compatibility.md) for camera compatibility.
 

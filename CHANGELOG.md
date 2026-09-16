@@ -24,6 +24,47 @@
   read dark — an unquirked emitter, which is exactly where a preview helps most —
   asking for N frames can block for `N * 3` dequeues.
 
+- **Two enrollment front-ends that show you the camera while it enrolls.**
+  `visage-enroll` (terminal, ratatui) and `visage-enroll-gui` (window, egui) both
+  subscribe to `PreviewFrame` and render the feed live. A dark frame is rendered
+  and **labelled** rather than dropped, and "too bright" is computed client-side —
+  the daemon's `is_dark_frame` only counts pixels below 32, so the white-out that
+  #104 fixed produces frames it considers good and never flags.
+
+  Neither is packaged. They exist to answer "does seeing the camera actually make
+  first-run enrollment succeed?" by use rather than by argument, after which one
+  will be kept deliberately and the other dropped.
+
+  ⚠️ `visage-enroll-gui` cannot currently be a shipping answer. `Enroll` is
+  root-only, and a GUI under `sudo` fights Wayland/X authorization and
+  `XDG_RUNTIME_DIR`. It says so and exits rather than pretending otherwise.
+  Resolving it needs polkit or a small root helper, and this codebase has neither.
+
+- **`visage-ipc` — one shared D-Bus proxy.** The `#[zbus::proxy]` definition lived
+  inline in the CLI; three clients would have meant three copies, which is the
+  duplicate-definition drift this repo has already shipped twice. One definition
+  also gives `dbus_contract.rs` a single place to look — it now skips
+  `#[zbus(signal)]` declarations, which it would otherwise scrape as methods and
+  fail on arity, since the server's `preview_frame` carries a `SignalEmitter` the
+  client never sees.
+
+### Fixed
+
+- **The CLI could talk to a different bus than the daemon.** It decided with
+  `env::var("VISAGE_SESSION_BUS").is_ok()`, so `VISAGE_SESSION_BUS=0` meant *yes*
+  to the client and *no* to the daemon: the daemon served the system bus, the
+  client connected to the session bus, and the user was told "is visaged
+  running?". The daemon had already fixed this in `parse_session_bus`; both sides
+  now call the same function.
+
+- **`nix build` ran half the test suite and reported success.** The package's
+  `checkPhase` ran `cargo test --workspace --lib`, and `--lib` selects *only*
+  library targets — `visaged`, `visage-tui` and `visage-gui` are binary-only
+  crates, and every `tests/*.rs` is a `--test` target. Of 127 test functions it
+  ran roughly 67 and silently skipped the rest, including **every contract test**.
+  It now runs the whole workspace. The three camera-dependent tests remain
+  `#[ignore]`d and are unaffected.
+
 ## v0.4.0 — 2026-09-16
 
 The first stable 0.4.0. It carries everything in v0.4.0-rc.1 below — one-command

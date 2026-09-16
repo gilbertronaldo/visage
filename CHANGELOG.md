@@ -66,6 +66,19 @@
 
 ### Fixed
 
+- **`visage-enroll` destroyed its own verdict on exit.** ratatui runs in the terminal's
+  alternate screen, which restores the previous contents when it leaves — so the reason
+  an enrollment failed vanished the moment the user pressed `q`. Measured on real
+  hardware 2026-09-16: a run that never reached `Enroll` spent 26 seconds displaying its
+  diagnosis and left **nothing** in the scrollback, so the failure could not be reported
+  or acted on. For a tool whose entire purpose is saying why enrollment failed, that
+  defeated the point of building it.
+
+  The capture outcomes and closing summary now print to stdout after the terminal is
+  restored. Extracted as `report_lines()` rather than printed inline so the property
+  that matters — the reason reaches the user — can be asserted in a test rather than
+  only observed.
+
 - **The IR emitter warning asserted something it cannot know, and was wrong.** It read
   `no IR emitter quirk for device; proceeding without illumination`. On Shinetech
   `3277:0055` the emitter strobes lit/unlit every frame by firmware default with no quirk

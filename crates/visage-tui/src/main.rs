@@ -109,7 +109,49 @@ async fn main() -> Result<()> {
     // prints — including a panic message from the worker.
     let ui_result = render;
     worker.abort();
+
+    // Say it again on stdout, now that the alternate screen is gone.
+    //
+    // ratatui restores the previous screen contents on exit, so everything the
+    // TUI drew — including the reason an enrollment failed — is destroyed the
+    // moment the user quits. Measured on real hardware 2026-09-16: a run that
+    // never reached Enroll spent 26 seconds displaying its diagnosis and left
+    // NOTHING in the scrollback, so the failure could not be reported or acted
+    // on. For a tool whose whole purpose is saying why enrollment failed,
+    // losing the reason on exit defeats the point of building it.
+    //
+    // A poisoned lock is exactly when the report matters most, so recover the
+    // inner value rather than panicking over it.
+    let snapshot = match app.lock() {
+        Ok(a) => report_lines(&a),
+        Err(poisoned) => report_lines(&poisoned.into_inner()),
+    };
+    for line in snapshot {
+        println!("{line}");
+    }
+
     ui_result
+}
+
+/// The closing verdict, as lines.
+///
+/// Returned rather than printed so it can be asserted in a test: "the reason
+/// reaches the user" is the property that matters, and a function that only
+/// prints cannot be checked.
+fn report_lines(a: &App) -> Vec<String> {
+    let mut out = Vec::new();
+    for o in &a.outcomes {
+        out.push(format!(
+            "{}  {}: {}",
+            if o.ok { "ok    " } else { "FAILED" },
+            o.label,
+            o.detail
+        ));
+    }
+    if let Some(msg) = &a.finished {
+        out.push(msg.clone());
+    }
+    out
 }
 
 /// Drive the enrollment, one label at a time, recording what happened.
@@ -357,6 +399,64 @@ fn halfblocks(p: &Preview, cols: u16, rows: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reason an enrollment failed must outlive the TUI.
+    ///
+    /// ratatui restores the previous screen on exit, so anything only drawn
+    /// inside the alternate screen is gone the moment the user quits. On real
+    /// hardware that turned a 26-second on-screen diagnosis into an empty
+    /// scrollback and an unreportable failure.
+    #[test]
+    fn the_failure_reason_reaches_stdout_after_the_alternate_screen_is_gone() {
+        let app = App {
+            phase: Phase::Done,
+            frame: None,
+            outcomes: vec![
+                Outcome {
+                    label: "normal".to_string(),
+                    ok: false,
+                    detail: "no usable frames captured".to_string(),
+                },
+                Outcome {
+                    label: "left".to_string(),
+                    ok: true,
+                    detail: "a-model-uuid".to_string(),
+                },
+            ],
+            finished: Some("enrolled 1 of 2 angles for this user.".to_string()),
+        };
+
+        let lines = report_lines(&app);
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("normal") && l.contains("no usable frames")),
+            "the specific reason a capture failed must survive; got {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("FAILED")),
+            "a failure must be visibly marked, not just listed; got {lines:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("enrolled 1 of 2 angles for this user."),
+            "the closing summary must come last; got {lines:?}"
+        );
+    }
+
+    /// Negative control: with nothing recorded there is nothing to print, so a
+    /// pass above cannot come from a function that always emits something.
+    #[test]
+    fn an_empty_run_reports_nothing_rather_than_a_reassuring_blank() {
+        let app = App {
+            phase: Phase::Connecting,
+            frame: None,
+            outcomes: Vec::new(),
+            finished: None,
+        };
+        assert!(report_lines(&app).is_empty());
+    }
 
     /// Both cases in one test on purpose.
     ///

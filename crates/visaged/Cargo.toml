@@ -39,6 +39,7 @@ maintainer-scripts = "../../packaging/debian/"
 assets = [
     ["target/release/visaged", "usr/bin/", "755"],
     ["target/release/visage", "usr/bin/", "755"],
+    ["target/release/visage-enroll", "usr/bin/", "755"],
     ["target/release/libpam_visage.so", "usr/lib/security/pam_visage.so", "644"],
     ["../../packaging/dbus/org.freedesktop.Visage1.conf", "usr/share/dbus-1/system.d/", "644"],
     ["../../packaging/systemd/visaged.service", "usr/lib/systemd/system/", "644"],
@@ -57,6 +58,7 @@ post_uninstall_script = "systemctl daemon-reload >/dev/null 2>&1 || :"
 assets = [
   { source = "target/release/visaged", dest = "/usr/bin/visaged", mode = "755" },
   { source = "target/release/visage",  dest = "/usr/bin/visage",  mode = "755" },
+  { source = "target/release/visage-enroll", dest = "/usr/bin/visage-enroll", mode = "755" },
   { source = "target/release/libpam_visage.so", dest = "/usr/lib64/security/pam_visage.so", mode = "644" },
   { source = "packaging/dbus/org.freedesktop.Visage1.conf", dest = "/usr/share/dbus-1/system.d/org.freedesktop.Visage1.conf", mode = "644", config = true },
   { source = "packaging/systemd/visaged.service",       dest = "/usr/lib/systemd/system/visaged.service",       mode = "644" },

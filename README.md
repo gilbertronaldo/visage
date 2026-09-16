@@ -64,12 +64,7 @@ camera sees, and a pre-install hardware check you can run before installing anyt
 | `visage-hw` | Library | Camera capture, IR emitter control, hardware quirks DB |
 | `visage-models` | Library | ONNX model manifest, pinned SHA-256 checksums, integrity verification |
 | `visage-ipc` | Library | The D-Bus client surface, defined once and shared by every client |
-
-Two enrollment front-ends live in the tree as **prototypes** and are deliberately not
-packaged: `visage-tui` (`visage-enroll`, ratatui) and `visage-gui` (`visage-enroll-gui`,
-egui). Both render the `PreviewFrame` feed live so you can see yourself while enrolling.
-They exist to settle which shape actually helps a first-time user, by use rather than by
-argument; one will be kept and the other dropped.
+| `visage-tui` | Binary | `visage-enroll` — enrollment with a live view of the camera |
 
 ## Quick Start (Build from Source)
 
@@ -191,7 +186,8 @@ Tracking a COPR repository in [#101](https://github.com/sovren-software/visage/i
 
 ### What the package does
 
-- Installs `visaged` (daemon), `visage` (CLI), and `pam_visage.so` (PAM module)
+- Installs `visaged` (daemon), `visage` (CLI), `visage-enroll` (enrollment with a live
+  camera view), and `pam_visage.so` (PAM module)
 - Enables the `visaged` systemd service and `visage-resume.service` (suspend/resume)
 - Configures PAM (automatic on Ubuntu/NixOS, manual on Arch)
 
@@ -200,6 +196,10 @@ Tracking a COPR repository in [#101](https://github.com/sovren-software/visage/i
 ```bash
 # Set up everything — models, enrollment, verification (start here)
 sudo visage onboard
+
+# Enrol with a live view of what the camera sees, so you can tell
+# "too dark" from "off-centre" instead of guessing why a capture failed
+sudo visage-enroll
 
 # Verify interactively (exits 0 on match, 1 on no-match)
 visage verify

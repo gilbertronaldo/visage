@@ -24,21 +24,21 @@
   read dark — an unquirked emitter, which is exactly where a preview helps most —
   asking for N frames can block for `N * 3` dequeues.
 
-- **Two enrollment front-ends that show you the camera while it enrolls.**
-  `visage-enroll` (terminal, ratatui) and `visage-enroll-gui` (window, egui) both
-  subscribe to `PreviewFrame` and render the feed live. A dark frame is rendered
-  and **labelled** rather than dropped, and "too bright" is computed client-side —
-  the daemon's `is_dark_frame` only counts pixels below 32, so the white-out that
-  #104 fixed produces frames it considers good and never flags.
+- **`visage-enroll` — enrollment with a live view of the camera.** Shipped in the
+  `.deb`, the RPM and the AUR package alongside `visaged` and `visage`.
 
-  Neither is packaged. They exist to answer "does seeing the camera actually make
-  first-run enrollment succeed?" by use rather than by argument, after which one
-  will be kept deliberately and the other dropped.
+  Enrollment used to be blind: look at a lens, captures happen, and nothing tells you
+  whether you were too dark, off-centre or out of frame. `visage-enroll` subscribes to
+  `PreviewFrame` and renders the feed as half-block Unicode with truecolor, which needs
+  no terminal graphics protocol. A dark frame is drawn and **labelled** rather than
+  dropped, and "too bright" is computed client-side — the daemon's `is_dark_frame` only
+  counts pixels below 32, so the white-out that #104 fixed produces frames it considers
+  good and never flags.
 
-  ⚠️ `visage-enroll-gui` cannot currently be a shipping answer. `Enroll` is
-  root-only, and a GUI under `sudo` fights Wayland/X authorization and
-  `XDG_RUNTIME_DIR`. It says so and exits rather than pretending otherwise.
-  Resolving it needs polkit or a small root helper, and this codebase has neither.
+  Validated on real hardware 2026-09-16 against a Shinetech `3277:0055` IR module:
+  **4 of 4 angles enrolled**, best-face confidence 0.8657, the preview legible at the
+  160 px cap, and `require_root_caller` exercised on the system bus rather than skipped.
+  It adds no new runtime dependency to any package — ratatui and crossterm are pure Rust.
 
 - **`visage-ipc` — one shared D-Bus proxy.** The `#[zbus::proxy]` definition lived
   inline in the CLI; three clients would have meant three copies, which is the
@@ -63,6 +63,22 @@
 
   This is the test that was missing when `framingMs` went unexposed: a missing option is
   not a build error, not a warning, and not visible in `visage status`.
+
+### Removed
+
+- **`visage-gui`, the egui enrollment prototype.** It existed to settle whether a
+  graphical front-end or a terminal one better helps a first-time user, by use rather
+  than by argument. Answered: the terminal one, and for a structural reason rather than
+  a matter of taste — `Enroll` is root-only, and a GUI under `sudo` fights Wayland/X
+  authorization and `XDG_RUNTIME_DIR`, while a TUI under `sudo` is ordinary. Making the
+  GUI viable would need polkit or a root helper, which is real work to answer a question
+  that is now closed.
+
+  Dropping it removes **199 packages** from the lockfile — the whole `eframe` / `winit` /
+  `glutin` / `wgpu` tree — with nothing added and no version change to any surviving
+  dependency. That is a meaningful reduction in dependency surface for a security
+  component, and it is the concrete argument for deleting a prototype rather than
+  leaving it parked in the tree.
 
 ### Fixed
 
@@ -97,8 +113,9 @@
 
 - **`nix build` ran half the test suite and reported success.** The package's
   `checkPhase` ran `cargo test --workspace --lib`, and `--lib` selects *only*
-  library targets — `visaged`, `visage-tui` and `visage-gui` are binary-only
-  crates, and every `tests/*.rs` is a `--test` target. Of 127 test functions it
+  library targets — `visaged` and `visage-tui` are binary-only crates (as was
+  `visage-gui`, removed above), and every `tests/*.rs` is a `--test` target. Of 127
+  test functions it
   ran roughly 67 and silently skipped the rest, including **every contract test**.
   It now runs the whole workspace. The three camera-dependent tests remain
   `#[ignore]`d and are unaffected.

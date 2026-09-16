@@ -33,8 +33,11 @@ build() {
 check() {
     cd "$pkgname-$pkgver"
     export CARGO_TARGET_DIR=target
-    # Unit tests only — integration tests require a running daemon and camera
-    cargo test --workspace --lib
+    # The whole workspace. `--lib` selects only library targets, which silently
+    # skipped every tests/*.rs and both binary-only crates — about half the
+    # suite, including the contract tests that guard this very file. The three
+    # camera-dependent tests are #[ignore]d and skip here without hardware.
+    cargo test --workspace
 }
 
 package() {
@@ -43,6 +46,7 @@ package() {
     # Binaries
     install -Dm755 target/release/visaged "$pkgdir/usr/bin/visaged"
     install -Dm755 target/release/visage  "$pkgdir/usr/bin/visage"
+    install -Dm755 target/release/visage-enroll "$pkgdir/usr/bin/visage-enroll"
 
     # PAM module
     install -Dm644 target/release/libpam_visage.so \

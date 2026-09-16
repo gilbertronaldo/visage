@@ -8,16 +8,22 @@ against the quirk database, `visage onboard` documented in five files that had n
 mentioned it, a Fedora install section, and changelog entries for eleven merged PRs that
 had none. The quirk table grew from 2 rows to 6.
 
-⚠️ **Unreleased and untested on hardware:** a framing phase before each capture
-(`VISAGE_FRAMING_MS`, default 1500, `0` disables), one shared D-Bus proxy in
-`visage-ipc`, and two enrollment front-ends — `visage-enroll` (ratatui) and
-`visage-enroll-gui` (egui) — that render the preview live. Both are prototypes, neither
-is packaged, and **neither has yet been run against a real IR camera.** See the
-Unreleased section of [`../CHANGELOG.md`](../CHANGELOG.md).
+**Unreleased:** a framing phase before each capture (`VISAGE_FRAMING_MS`, default 1500,
+`0` disables), one shared D-Bus proxy in `visage-ipc`, and **`visage-enroll`** — a
+terminal enrollment front-end that shows you the camera live. It now ships in the `.deb`,
+RPM and AUR packages. See the Unreleased section of [`../CHANGELOG.md`](../CHANGELOG.md).
 
-⛔ `visage-enroll-gui` is not a shipping candidate as it stands: `Enroll` is root-only,
-and a GUI under `sudo` fights Wayland/X authorization and `XDG_RUNTIME_DIR`. It exits
-with that explanation rather than pretending. Resolving it needs polkit or a root helper.
+✅ **Hardware-validated 2026-09-16** on the-first (Shinetech `3277:0055`): 4 of 4 angles
+enrolled through `visage-enroll`, best-face confidence 0.8657, the preview legible at the
+160 px cap, and `require_root_caller` exercised on the system bus rather than skipped by
+session-bus mode. This is the first end-to-end confirmation that the preview works on a
+real IR sensor, not only in unit tests.
+
+⛔ The `visage-gui` egui prototype was **removed**, not parked. It existed to decide
+between a graphical and a terminal front-end; the terminal won on a structural argument,
+not taste — `Enroll` is root-only, a GUI under `sudo` fights Wayland/X authorization and
+`XDG_RUNTIME_DIR`, and a TUI under `sudo` is ordinary. Deleting it also dropped 199
+packages from the lockfile.
 
 **Prior state (v0.3.6):** All 6 implementation steps complete + model integrity enforcement + OSS governance + passive liveness detection. Since v0.3.3: fixed capture degradation on shared webcams (per-capture V4L2 format re-assert + in-process camera self-heal, #48); the IR emitter quirks DB now covers ASUS Zenbook 14 UM3406HA, Lenovo ThinkPad X1 Carbon Gen 9, Lenovo ThinkBook 14 MP2PQAZG, and HP OmniBook X Flip; NixOS flake build fixed; Dependabot security updates + a scheduled `cargo audit` enabled; contribution review reframed problem-first (ADR 010 §9). v0.3.6 added a security hardening batch: in-process root checks on the privileged D-Bus methods (`Enroll`/`RemoveModel`/`ListModels`), the `VISAGE_SESSION_BUS` flag and passive liveness now fail closed, `zbus` pinned to the tokio executor (drops the `async-io` stack), and an AES-256-GCM known-answer + blob-format test. End-to-end tested on Ubuntu 24.04.4 LTS.
 

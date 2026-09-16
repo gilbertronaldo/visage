@@ -103,9 +103,9 @@ rustPlatform.buildRustPackage {
   # The whole workspace — this said `--workspace --lib`, which was close to
   # vacuous.
   #
-  # `--lib` selects ONLY library targets. `visaged`, `visage-tui` and
-  # `visage-gui` are binary-only crates, and every `tests/*.rs` is a `--test`
-  # target, so of 127 test functions in the workspace it ran roughly 67 and
+  # `--lib` selects ONLY library targets. `visaged` and `visage-tui` are
+  # binary-only crates, and every `tests/*.rs` is a `--test` target, so of the
+  # workspace's test functions it ran roughly half and
   # silently skipped the rest — including all four contract tests, which are
   # precisely the ones guarding packaging and the D-Bus wire format. A green
   # `nix build` said nothing about them, which is worse than not running them.

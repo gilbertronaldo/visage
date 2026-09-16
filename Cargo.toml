@@ -9,7 +9,6 @@ members = [
     "crates/visage-models",
     "crates/visage-ipc",
     "crates/visage-tui",
-    "crates/visage-gui",
 ]
 
 [workspace.package]
@@ -28,10 +27,6 @@ rust-version = "1.88"
 # Terminal UI. `ratatui` re-exports the `crossterm` it was built against, so
 # depending on crossterm separately is how you get two incompatible versions.
 ratatui = "0.29"
-
-# Pure-Rust GUI. `eframe` bundles egui with winit and a renderer, so this is one
-# dependency rather than three that must agree on versions.
-eframe = { version = "0.29", default-features = false, features = ["glow", "wayland", "x11"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -253,7 +253,7 @@ if [ "$ENROLL" = false ]; then
     echo ""
     echo -e "${GREEN}${BOLD}Build and install complete.${NC}"
     echo ""
-    echo "To enroll your face:  sudo visage enroll --label default"
+    echo "To set up face auth:  sudo visage onboard"
     echo "To verify:            visage verify"
     echo "To test with sudo:    sudo -k && sudo echo 'face auth works'"
     echo ""
@@ -308,14 +308,14 @@ fi
 
 echo ""
 echo -e "  ${BOLD}Look at your camera and hold still.${NC}"
-echo "  Enrollment captures 5 frames and selects the best one."
+echo "  Onboarding captures four labelled angles, prompting before each one,"
+echo "  then verifies against the daemon before reporting success."
 echo ""
-read -rp "  Ready? Press Enter to start enrollment... "
 
-if sudo visage enroll --label default --user "$USER_NAME"; then
-    ok "Face enrolled for user '$USER_NAME'"
+if sudo visage onboard --user "$USER_NAME"; then
+    ok "Face enrolled and verified for user '$USER_NAME'"
 else
-    fail "Enrollment failed. Ensure you're facing the camera in adequate lighting."
+    fail "Onboarding failed. Ensure you're facing the camera in adequate lighting."
 fi
 
 # ── Stage 6: Verification ────────────────────────────────────────────────────
@@ -363,6 +363,7 @@ echo "  Useful commands:"
 echo "    visage status         Show daemon status"
 echo "    visage discover       List cameras and quirk status"
 echo "    visage verify         Manual face verification check"
+echo "    visage onboard        Re-run enrollment (models + angles + verify)"
 echo "    visage list           List enrolled face models (requires sudo)"
 echo "    visage test           Camera diagnostics"
 echo ""

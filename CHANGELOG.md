@@ -2,6 +2,110 @@
 
 ## Unreleased
 
+### Added
+
+- **IR emitter quirk for the Lenovo ThinkPad P14s Gen 4 — Syntek `174f:11a8`.** The
+  project's third externally contributed quirk, and the second from this contributor.
+  ([#102](https://github.com/sovren-software/visage/pull/102))
+
+- **Fedora RPM packaging via `cargo-generate-rpm`.** `cargo generate-rpm -p crates/visaged`
+  now produces an RPM carrying the same assets as the `.deb` at Fedora's paths, with the PAM
+  module in `/usr/lib64/security`.
+
+  Fedora has no `pam-auth-update` and `authselect` owns `system-auth`, so PAM configuration
+  stays manual there. The package ships the one-line snippet using the same
+  `[success=done default=ignore]` control as every other packaging channel, and the
+  `pam_control_contract` test now covers that file too — so the control keyword cannot drift
+  in the RPM without failing the suite.
+
+  Tested on Fedora 44 x86_64: build, `dnf install`, `dnf` upgrade, `sudo`, polkit, and GDM
+  unlock by face.
+
+  This does **not** close [#101](https://github.com/sovren-software/visage/issues/101). That
+  issue asks for an RPM *and/or* COPR and calls COPR preferable; this delivers
+  `cargo-generate-rpm` metadata, not a `.spec` or a COPR repository, and the RPM is not yet
+  wired into the release workflow — a Fedora user still builds it themselves.
+  ([#103](https://github.com/sovren-software/visage/pull/103))
+
+- **`contrib/pam/visage-has-session` — a session gate for GNOME.** GNOME unlocks the login
+  keyring from the password entered at first login, so authenticating that first login by
+  face leaves the keyring locked. The helper distinguishes a first login from a later unlock,
+  letting a PAM stack ask for the password once and accept a face every time after.
+  ([#105](https://github.com/sovren-software/visage/pull/105))
+
+### Fixed
+
+- **The first verify after every daemon start failed on cameras with a quirked emitter.**
+  In practice: the first `sudo` after boot, and the first unlock after every resume, since
+  `visage-resume.service` restarts the daemon.
+
+  Sensor auto-gain only adapts while the camera is streaming, drops within about two seconds
+  when a quirked emitter saturates it, and recovers slowly. `capture_frame()` built and tore
+  down a fresh `MmapStream` on **every call**, so the startup warmup never held a continuous
+  stream and gain settled against ambient light with the emitter off — leaving the first real
+  capture blown out to white and undetectable.
+
+  The warmup now activates the emitter first and runs as one continuous `capture_frames`
+  stream. `VISAGE_WARMUP_FRAMES` counts *usable* frames, skipping the unlit half of a strobing
+  emitter's cycle, and is now documented.
+
+  Measured A/B on Syntek `174f:11a8` from the same starting state, reproducing each path's
+  exact capture sequence — the detector received frame means `[33, 255, 33]` before the fix
+  (silhouette, white-out, silhouette) and `[24, 24, 24]` after, with the face crisply lit.
+  ([#104](https://github.com/sovren-software/visage/pull/104))
+
+- **The published MSRV was false, and CI now verifies it.** The workspace declared
+  `rust-version = "1.75"` while 59 packages in the dependency tree require more — `ort` and
+  `image` both at 1.88 — so the crate could not build on the version it advertised. Corrected
+  to 1.88, with a CI job that keeps the claim true.
+  ([#93](https://github.com/sovren-software/visage/pull/93))
+
+- **The quirk contribution workflow was stale, and one shipped quirk was undocumented.** The
+  hardware compatibility table listed four quirks while five shipped, omitting the project's
+  first external hardware contribution.
+  ([#94](https://github.com/sovren-software/visage/pull/94))
+
+### Security
+
+- **RUSTSEC-2026-0204 — `crossbeam-epoch` 0.9.18 → 0.9.21.** Invalid pointer dereference in
+  the `fmt::Pointer` implementation for `Atomic` and `Shared`; the advisory requires ≥ 0.9.20.
+  It reaches the tree transitively and undeclared, via
+  `crossbeam-deque ← rayon-core ← exr/rayon ← image`.
+
+  This single crate is what had made the scheduled **Security Audit workflow fail every run
+  from 2026-07-13 to 2026-09-14 — ten consecutive weeks.** There is no `audit.toml`, so the
+  nine "allowed warnings" the job also reports never failed it.
+  ([#109](https://github.com/sovren-software/visage/pull/109))
+
+- **RUSTSEC-2026-0285 — `rustls` 0.23.36 → 0.23.45**, carrying `rustls-webpki`
+  0.103.13 → 0.103.15. rustls incorrectly accepts TLS 1.3 handshake messages across encryption
+  level boundaries; severity 5.3 (medium). Transitive via
+  `ureq ← visage-cli` and `ort-sys ← ort ← visage-core ← visaged`.
+
+  Published 2026-09-14 — the day after the last scheduled audit run — and it entered this tree
+  through the `ureq 3.4.1` bump in this same batch. `cargo audit` against the merged lockfile
+  returned exit 1 before this change and exit 0 after.
+  ([#112](https://github.com/sovren-software/visage/pull/112))
+
+### Changed
+
+- **`audit.yml`'s toolchain is pinned, mirroring `ci.yml`.** It was still floating on
+  `dtolnay/rust-toolchain@stable` — the exact pin whose six-day outage in August blocked every
+  merge in the repository, where an identical commit passed CI on 08-18 and failed on 08-24
+  because the action resolved onto a clippy carrying a new lint. `ci.yml` was pinned in
+  response; `audit.yml` was missed and floated for three more weeks, in the one job whose
+  purpose is noticing problems. `rust-toolchain.toml` is now the single source of truth for
+  both workflows.
+
+  The trade-off runs the other way for this job, and the file says so in a comment:
+  `cargo install cargo-audit --locked` needs a toolchain new enough to *build* cargo-audit, so
+  a pin that falls behind its MSRV breaks the job. Headroom at the time of pinning was 1.95.0
+  against cargo-audit 0.22.2's required 1.88 — and that failure would be loud, attributable,
+  and fixed by editing one file.
+
+- Dependency bumps: `anyhow` 1.0.103 → 1.0.104, `serde` 1.0.228 → 1.0.229, `ureq` 3.4.0 →
+  3.4.1, `toml` 1.1.3 → 1.1.6, `uuid` 1.24.0 → 1.26.1.
+
 ## v0.4.0-rc.1 — 2026-08-24
 
 ### Added

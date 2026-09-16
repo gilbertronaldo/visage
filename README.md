@@ -19,28 +19,22 @@ Linux-PAM — no kernel patches, no modified sudo.
 
 ## Status
 
-**v0.3.6 — feature-complete, end-to-end tested on Ubuntu 24.04.4 LTS.**
+**v0.4.0-rc.1 — feature-complete, running on real hardware.**
 
-All 6 implementation steps complete. Verified: enroll, verify, PAM/sudo integration,
-systemd hardening, D-Bus access control, install/remove/purge lifecycle, suspend/resume.
-Since v0.3.3: fixed capture degradation on shared webcams (per-capture format re-assert +
-in-process camera self-heal), added IR-emitter coverage for the HP OmniBook X Flip and
-Lenovo ThinkBook 14, enabled Dependabot security updates + a scheduled `cargo audit`, and
-reframed contribution review around the problem a PR solves (see [CONTRIBUTING](CONTRIBUTING.md)).
-v0.3.6 hardened the D-Bus authorization surface (in-process root checks on the privileged
-methods; the session-bus flag and passive liveness now fail closed) and pinned the async
-executor to tokio. See [CHANGELOG](CHANGELOG.md) for the full history.
+Enrollment, verification, PAM integration for `sudo` and lock screens, systemd hardening,
+D-Bus access control, package lifecycle and suspend/resume are implemented and tested end
+to end. **`sudo visage onboard`** takes a fresh machine to working face auth in one command.
 
-| Step | Component | Status |
-|------|-----------|--------|
-| 1 | Camera capture pipeline (`visage-hw`) | **Complete** |
-| 2 | ONNX inference — SCRFD + ArcFace (`visage-core`) | **Complete** |
-| 3 | Daemon + D-Bus + SQLite model store (`visaged`) | **Complete** |
-| 4 | PAM module + system bus migration (`pam-visage`) | **Complete** |
-| 5 | IR emitter integration (`visage-hw`) | **Complete** |
-| 6 | Ubuntu packaging & system integration | **Complete** |
+Since v0.3.6: one-command onboarding, the first hardware validation of passive liveness, a
+configurable PAM timeout, the first integration tests, Fedora RPM packaging, and three more
+IR emitter quirks. See [CHANGELOG](CHANGELOG.md) for the full history.
 
-Not yet suitable for production use — see [Known Limitations](docs/STATUS.md#known-limitations-at-v03).
+> ⚠️ **Keep a password fallback. Do not make this your only authentication factor yet.**
+> On its first hardware spoof validation, passive liveness did **not** discriminate: a
+> hand-held phone screen displaced *more* than two genuine live attempts, and the identity
+> stage matched that same photo. Every PAM stack shipped here falls through to the password,
+> and it should stay that way. Details: [Known Limitations](docs/STATUS.md#known-limitations-at-v03)
+> and the [threat model](docs/threat-model.md).
 
 ## Architecture
 
@@ -92,11 +86,15 @@ the [Operations Guide](docs/operations-guide.md).
 ### Ubuntu / Debian (.deb)
 
 ```bash
-sudo apt install ./visage_0.3.6_amd64.deb
-sudo visage setup                          # download ONNX models (~182 MB)
-sudo visage enroll --label default         # enroll your face
+sudo apt install ./visage_*_amd64.deb
+sudo visage onboard                        # models, enrollment, verification — one command
 sudo echo "face auth works"                # test — face first, password fallback
 ```
+
+`onboard` downloads the ONNX models (~182 MB), captures several labelled angles with a
+prompt between each, and verifies against the daemon before reporting success — so a
+failed enrollment cannot look like a working one. It exits non-zero if verification does
+not recognise you.
 
 PAM is configured automatically via `pam-auth-update`.
 
@@ -134,11 +132,10 @@ sudo apt install ./target/debian/visage_*.deb
 }
 ```
 
-Then download models and enroll:
+Then run onboarding:
 
 ```bash
-sudo visage setup
-sudo visage enroll --label default
+sudo visage onboard
 ```
 
 The NixOS module handles systemd, D-Bus policy, and PAM integration declaratively.
@@ -150,10 +147,8 @@ See `packaging/nix/module.nix` for all options (`modelDir`, `camera`, `similarit
 git clone https://aur.archlinux.org/visage.git
 # visage-git and visage-bin are also available
 cd visage && makepkg -si
-sudo visage setup
-sudo visage enroll --label default
-# add --user <username> to enroll for someone else
-visage verify
+sudo visage onboard
+# add --user <username> to onboard someone else
 ```
 
 PAM requires a manual one-line edit on Arch — add before `pam_unix.so` in
@@ -162,6 +157,28 @@ PAM requires a manual one-line edit on Arch — add before `pam_unix.so` in
 ```
 auth  [success=done default=ignore]  pam_visage.so
 ```
+
+### Fedora (RPM)
+
+No published package yet — build the RPM from source:
+
+```bash
+cargo install cargo-generate-rpm
+cargo build --release --workspace
+cargo generate-rpm -p crates/visaged
+sudo dnf install ./target/generate-rpm/visage-*.x86_64.rpm
+sudo visage onboard
+```
+
+Fedora has no `pam-auth-update` and `authselect` owns `system-auth`, so PAM is configured
+manually — the package ships the snippet at `/usr/share/visage/pam.d/visage`. Add before
+`pam_unix.so` in `/etc/pam.d/system-auth`:
+
+```
+auth  [success=done default=ignore]  pam_visage.so
+```
+
+Tracking a COPR repository in [#101](https://github.com/sovren-software/visage/issues/101).
 
 ### What the package does
 
@@ -172,8 +189,8 @@ auth  [success=done default=ignore]  pam_visage.so
 ## Usage
 
 ```bash
-# Enroll your face
-sudo visage enroll --label default
+# Set up everything — models, enrollment, verification (start here)
+sudo visage onboard
 
 # Verify interactively (exits 0 on match, 1 on no-match)
 visage verify
@@ -258,7 +275,11 @@ Confirmed quirk entries:
 | File | Device | Source |
 |------|--------|--------|
 | `04f2-b6d9.toml` | ASUS Zenbook 14 UM3406HA | Verified on hardware |
+| `04f2-b6d0.toml` | Lenovo ThinkPad P14s Gen 2a 21A0000RMX | Verified on hardware (community) |
 | `174f-2454.toml` | Lenovo ThinkPad X1 Carbon Gen 9 20XW00FPUS | Verified on hardware |
+| `174f-11a8.toml` | Lenovo ThinkPad P14s Gen 4 21HF | Verified on hardware (community) |
+| `30c9-00c2.toml` | Lenovo ThinkBook 14 MP2PQAZG | Verified on hardware |
+| `30c9-0120.toml` | HP OmniBook X Flip | Verified on hardware |
 
 To add support for your camera, see [contrib/hw/README.md](contrib/hw/README.md).
 

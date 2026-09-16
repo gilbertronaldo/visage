@@ -36,19 +36,16 @@ Use `--no-enroll` for headless or CI environments. See `scripts/quickstart.sh --
 
 ```bash
 # 1. Install the package
-sudo apt install ./visage_0.3.0_amd64.deb
+sudo apt install ./visage_*_amd64.deb
 
-# 2. Download ONNX models (~182 MB, requires internet)
-sudo visage setup
+# 2. Models, enrollment and verification — one command, once per user
+sudo visage onboard
 
-# 3. Enroll your face (run once per user)
-sudo visage enroll --label default
-
-# 4. Test
+# 3. Test
 sudo echo "face auth works"
 ```
 
-After step 4, pressing Enter should authenticate via face recognition. If no face is
+After step 3, pressing Enter should authenticate via face recognition. If no face is
 detected quickly, the system falls back to your password prompt.
 
 ### Build from source (Ubuntu/Debian)
@@ -92,11 +89,10 @@ Add the Visage flake input and enable the module in your NixOS configuration:
 }
 ```
 
-After `nixos-rebuild switch`, download models and enroll:
+After `nixos-rebuild switch`, run onboarding:
 
 ```bash
-sudo visage setup
-sudo visage enroll --label default
+sudo visage onboard
 ```
 
 The module handles systemd service, D-Bus policy, and PAM integration declaratively.
@@ -120,8 +116,7 @@ auth  [success=done default=ignore]  pam_visage.so
 Then complete setup:
 
 ```bash
-sudo visage setup
-sudo visage enroll --label default
+sudo visage onboard
 ```
 
 On removal (`pacman -R visage`), remember to remove the `pam_visage.so` line
@@ -151,6 +146,28 @@ auth        [success=done default=ignore]    pam_visage.so
 ---
 
 ## First-Time Setup
+
+**The short version — one command:**
+
+```bash
+sudo visage onboard
+```
+
+`onboard` performs all three steps below in order: it downloads the models, captures four
+labelled angles with a prompt before each, and verifies against the running daemon before
+reporting success.
+
+It is the recommended path because the manual sequence has two traps. `enroll` defaults
+`--user` to `$USER`, which is **`root`** under the `sudo` these commands require — so a bare
+`sudo visage enroll` enrols your face against the root account and reports success. And a
+single capture is fragile on hardware where the IR emitter strobes or has no quirk entry.
+
+`onboard` refuses to target `root` unless you pass `--user root` explicitly, keeps whichever
+captures succeeded if one fails, and **exits non-zero if verification does not recognise the
+enrolled face** — so a failed setup cannot look like a working one.
+
+The three steps are documented individually below, for troubleshooting and for re-running
+one piece at a time.
 
 ### 1. Download models (one-time):
 
@@ -191,9 +208,13 @@ journalctl -u visaged -n 30   # inspect logs
 
 ### 3. Enroll your face
 
+Prefer `sudo visage onboard`, which does this with several angles and verifies the result.
+To enroll a single capture manually:
+
 ```bash
-# Enroll (requires root — enrollment modifies the face database)
-sudo visage enroll --label default
+# Enroll (requires root — enrollment modifies the face database).
+# --user matters: it defaults to $USER, which is root under sudo.
+sudo visage enroll --label default --user "$SUDO_USER"
 ```
 
 Enrollment captures 5 frames, extracts an ArcFace embedding from each, and stores the

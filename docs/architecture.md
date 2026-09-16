@@ -33,12 +33,34 @@
 │ (CLI)     │            │ core     │           │ ArcFace  │
 └───────────┘            └──────────┘           └──────────┘
 
+┌───────────────┐   D-Bus call + PreviewFrame signal   ┌──────────┐
+│ visage-enroll │◀────────────────────────────────────▶│ visaged  │
+│ (TUI)         │   live camera view while enrolling   └──────────┘
+└───────────────┘
+
+┌──────────────────────────────────────────────────────────┐
+│ visage-ipc (library)                                     │
+│ The #[zbus::proxy] trait + signal, defined ONCE           │
+│ Used by: visage-cli + visage-enroll                      │
+└──────────────────────────────────────────────────────────┘
+
 ┌──────────────────────────────────────────────────────────┐
 │ visage-models (library)                                  │
 │ Pinned SHA-256 manifest · verify_models_dir()            │
 │ Used by: visaged (startup check) + visage-cli (setup)    │
 └──────────────────────────────────────────────────────────┘
 ```
+
+`PreviewFrame` is the only signal on the interface and the only path by which
+pixels leave the daemon. It is **unicast to the enrolling client, scoped to the
+duration of one `Enroll` call, and downscaled to 160px on the longest edge** —
+enough to check framing, deliberately not enough to be a useful biometric
+capture. There is no method that streams frames outside an enrollment, which is
+what keeps the preview from becoming a general camera tap.
+
+See [ADR 013](decisions/013-enrollment-preview-and-the-tui-front-end.md) for the
+framing phase, the shared proxy, and why the terminal front-end ships while the
+graphical one was deleted.
 
 ## Authentication Flow
 
@@ -122,9 +144,26 @@ Camera::capture_frame(&self) -> Result<Frame, CameraError>
 // Returns (good_frames, dark_frames_skipped)
 Camera::capture_frames(&self, count: usize) -> Result<(Vec<Frame>, usize), CameraError>
 
+// Same, but hands every frame to `observe` first — including DARK ones, which
+// is what lets a client label "too dark" instead of seeing them silently vanish
+Camera::capture_frames_observed<F>(&self, count: usize, observe: F)
+    -> Result<(Vec<Frame>, usize), CameraError> where F: FnMut(&Frame)
+
+// Stream for a DURATION, retaining nothing. Returns frames seen.
+Camera::stream_frames_for<F>(&self, budget: Duration, observe: F)
+    -> Result<usize, CameraError> where F: FnMut(&Frame)
+
 // Enumerate V4L2 capture devices
 Camera::list_devices() -> Vec<DeviceInfo>
 ```
+
+All three share one capture loop (`capture_inner`) with a `Budget` of either
+frames or a deadline. ⚠️ **The distinction matters on unquirked hardware.** The
+counted path credits only non-dark frames toward its target, so asking for N
+frames can block for `N * 3` dequeues where most frames read dark — which is
+exactly the case where a preview is most useful. A framing phase is therefore
+"stream for ~1.5s", not "collect N good frames", and `stream_frames_for` also
+retains nothing, avoiding ~14 MB of allocate-and-discard per label.
 
 The `Frame` struct carries: `data` (grayscale pixels), `width`, `height`,
 `timestamp`, `sequence` (V4L2 buffer sequence number), `is_dark`.
@@ -145,8 +184,18 @@ a `OnceLock<Vec<QuirkFile>>` at first access.
 
 | File | Camera | VID | PID |
 |------|--------|-----|-----|
+| `04f2-b6d0.toml` | Lenovo ThinkPad P14s Gen 2a 21A0000RMX | `0x04F2` | `0xB6D0` |
 | `04f2-b6d9.toml` | ASUS Zenbook 14 UM3406HA | `0x04F2` | `0xB6D9` |
+| `174f-11a8.toml` | Lenovo ThinkPad P14s Gen 4 (Syntek) | `0x174F` | `0x11A8` |
 | `174f-2454.toml` | Lenovo ThinkPad X1 Carbon Gen 9 20XW00FPUS | `0x174F` | `0x2454` |
+| `30c9-00c2.toml` | Lenovo ThinkBook 14 MP2PQAZG | `0x30C9` | `0x00C2` |
+| `30c9-0120.toml` | HP OmniBook X Flip (Luxvisions) | `0x30C9` | `0x0120` |
+
+⚠️ This table is a **copy** of `contrib/hw/*.toml`, and copies drift. It has gone
+stale twice: the README's version sat at 2 rows while 6 files shipped, and this
+one was still at 2 after that was fixed. `visage discover` reads the database
+itself and is authoritative; treat any hand-written table as a convenience that
+may lag.
 
 ### Device Discovery
 

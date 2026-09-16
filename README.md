@@ -322,7 +322,8 @@ Bugs fixed during testing: [DeviceAllow glob](docs/STATUS.md#bugs-found-during-t
 - [Release Status & Known Limitations](docs/STATUS.md)
 - [Architecture](docs/architecture.md)
 - [Threat Model](docs/threat-model.md)
-- [Architecture Decisions](docs/decisions/) ← 10 ADRs covering implementation, security, and governance decisions
+- [Architecture Decisions](docs/decisions/) ← 13 ADRs covering implementation, security, and governance decisions
+- [ADR 013 — Enrollment preview, and why the TUI ships](docs/decisions/013-enrollment-preview-and-the-tui-front-end.md)
 
 ## Security
 

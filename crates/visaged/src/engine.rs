@@ -220,9 +220,23 @@ pub fn spawn_engine(
                 Some(e)
             }
             None => {
+                // Says what Visage will do, not what the hardware does.
+                //
+                // This read "proceeding without illumination", which asserts a
+                // fact about the sensor that the daemon cannot know and which is
+                // false on at least one shipped module: Shinetech 3277:0055
+                // strobes its emitter lit/unlit every frame by firmware default
+                // with no quirk present, measured at 10 good / 9 dark frames and
+                // mean brightness 54.8. Two separate documents in this repo had
+                // to carry a correction for this one log line, and it still sent
+                // a reader chasing a missing quirk as the cause of a capture
+                // failure that had nothing to do with it.
                 tracing::warn!(
                     device = camera_device,
-                    "no IR emitter quirk for device; proceeding without illumination"
+                    "no IR emitter quirk for device; Visage will not control the \
+                     emitter. Some modules illuminate by firmware default — run \
+                     `visage test` and check frame brightness before assuming the \
+                     sensor is dark"
                 );
                 None
             }

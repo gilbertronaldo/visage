@@ -132,6 +132,28 @@ in
       '';
     };
 
+    framingMs = lib.mkOption {
+      type = lib.types.nullOr lib.types.ints.unsigned;
+      default = null;
+      example = 1500;
+      description = ''
+        How long, in milliseconds, to stream frames to an enrolling client
+        before capturing anything, so the user can see themselves and get
+        centred. When null, the daemon uses its compiled default (1500).
+        Set to 0 to disable the framing phase entirely.
+
+        Only clients that subscribe to `PreviewFrame` pay this cost — a
+        scripted or headless enrollment skips the phase, so it adds no
+        latency to automated setup.
+
+        ⚠️ Not purely cosmetic. Sensor auto-gain adapts only while the camera
+        is streaming, so holding the stream open for framing acts as an
+        extended warmup and leaves the sensor in a different state than a bare
+        capture would. That is likely an improvement, but it is a real change
+        to capture conditions rather than a no-op.
+      '';
+    };
+
     verifyTimeoutSeconds = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -277,6 +299,8 @@ in
         VISAGE_FRAMES_PER_ENROLL = toString cfg.framesPerEnroll;
       } // lib.optionalAttrs (cfg.warmupFrames != null) {
         VISAGE_WARMUP_FRAMES = toString cfg.warmupFrames;
+      } // lib.optionalAttrs (cfg.framingMs != null) {
+        VISAGE_FRAMING_MS = toString cfg.framingMs;
       } // lib.optionalAttrs (cfg.verifyTimeoutSeconds != null) {
         VISAGE_VERIFY_TIMEOUT_SECS = toString cfg.verifyTimeoutSeconds;
       } // lib.optionalAttrs (!cfg.emitter.enable) {

@@ -48,7 +48,32 @@
   fail on arity, since the server's `preview_frame` carries a `SignalEmitter` the
   client never sees.
 
+- **`services.visage.framingMs`** — the framing phase is now configurable on NixOS.
+  It shipped in the daemon reading `VISAGE_FRAMING_MS` with no module option at all, so
+  on the one platform Visage is the default authentication layer for, the phase could
+  neither be tuned nor disabled. `0` disables it; `null` keeps the compiled 1500 ms.
+
+- **A contract test tying the daemon's knobs to the NixOS module**
+  (`tests/nixos_options_contract.rs`), in both directions: every `VISAGE_*` the daemon
+  reads must be settable from the module, and the module must not set one the daemon
+  never reads. The second direction catches a rename leaving an option silently inert.
+  `VISAGE_SESSION_BUS` is the one deliberate exclusion — it also skips
+  `require_root_caller`, so an option for it would be an option for weakening the
+  service's own access control.
+
+  This is the test that was missing when `framingMs` went unexposed: a missing option is
+  not a build error, not a warning, and not visible in `visage status`.
+
 ### Fixed
+
+- **The IR emitter warning asserted something it cannot know, and was wrong.** It read
+  `no IR emitter quirk for device; proceeding without illumination`. On Shinetech
+  `3277:0055` the emitter strobes lit/unlit every frame by firmware default with no quirk
+  present — measured at 10 good / 9 dark frames, mean brightness 54.8 — so the
+  illumination claim is false on shipped hardware. Two separate documents in this repo
+  already carried a correction for that one line, and it still sent a reader chasing a
+  missing quirk as the cause of a capture failure it had nothing to do with. It now
+  states what Visage does (it will not control the emitter) and points at `visage test`.
 
 - **The CLI could talk to a different bus than the daemon.** It decided with
   `env::var("VISAGE_SESSION_BUS").is_ok()`, so `VISAGE_SESSION_BUS=0` meant *yes*

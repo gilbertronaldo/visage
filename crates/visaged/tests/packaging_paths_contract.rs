@@ -68,6 +68,9 @@ fn built_artifact_names() -> Vec<String> {
         "crates/visage-core/Cargo.toml",
         "crates/visage-hw/Cargo.toml",
         "crates/visage-models/Cargo.toml",
+        "crates/visage-ipc/Cargo.toml",
+        "crates/visage-tui/Cargo.toml",
+        "crates/visage-gui/Cargo.toml",
     ];
     let mut names = Vec::new();
     for c in crates {

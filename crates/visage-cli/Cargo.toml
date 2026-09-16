@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 visage-hw = { path = "../visage-hw" }
 visage-models = { path = "../visage-models" }
+visage-ipc = { path = "../visage-ipc" }
 image = { workspace = true }
 zbus = { workspace = true }
 clap = { workspace = true }

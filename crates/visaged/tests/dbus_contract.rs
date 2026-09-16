@@ -6,7 +6,7 @@
 //! | role | file |
 //! |---|---|
 //! | server | `crates/visaged/src/dbus_interface.rs` — `#[interface(...)]` |
-//! | CLI client | `crates/visage-cli/src/main.rs` — `#[zbus::proxy(...)]`, 5 methods |
+//! | Client     | `crates/visage-ipc/src/lib.rs` — `#[zbus::proxy(...)]`, 5 methods |
 //! | PAM client | `crates/pam-visage/src/lib.rs` — `#[zbus::proxy(...)]`, 1 method |
 //!
 //! plus the bus name and object path in `crates/visaged/src/main.rs`, and the
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 const SERVER: &str = "crates/visaged/src/dbus_interface.rs";
 const DAEMON_MAIN: &str = "crates/visaged/src/main.rs";
-const CLI_CLIENT: &str = "crates/visage-cli/src/main.rs";
+const CLI_CLIENT: &str = "crates/visage-ipc/src/lib.rs";
 const PAM_CLIENT: &str = "crates/pam-visage/src/lib.rs";
 const DBUS_POLICY: &str = "packaging/dbus/org.freedesktop.Visage1.conf";
 
@@ -104,6 +104,14 @@ fn wire_args(arg_list: &str) -> Vec<String> {
 }
 
 /// Method names declared inside a `#[zbus::proxy]` trait.
+///
+/// ⚠️ Signals are skipped, and must be. A `#[zbus(signal)]` declaration is
+/// syntactically an `async fn` in the same block, but it is not a method the
+/// client calls — it is a message the server sends. Counting one as a method
+/// makes this test demand a server-side `async fn` of matching arity, and the
+/// server's signal declaration carries an extra `signal_emitter` parameter that
+/// never reaches the wire. The result is a failure that looks like a real
+/// contract breach and is entirely an artifact of this parser.
 fn proxy_methods(body: &str) -> Vec<String> {
     let start = match body.find("#[zbus::proxy(") {
         Some(i) => i,
@@ -118,15 +126,26 @@ fn proxy_methods(body: &str) -> Vec<String> {
         .find("\n}")
         .map(|i| brace + i)
         .unwrap_or(rest.len());
-    rest[brace..end]
-        .lines()
-        .filter_map(|l| {
-            let t = l.trim();
-            let t = t.strip_prefix("async fn ")?;
-            let name = t.split('(').next()?;
-            Some(name.to_string())
-        })
-        .collect()
+    let mut methods = Vec::new();
+    let mut pending_signal = false;
+    for line in rest[brace..end].lines() {
+        let t = line.trim();
+        if t.starts_with("#[zbus(") && t.contains("signal") {
+            pending_signal = true;
+            continue;
+        }
+        let Some(after) = t.strip_prefix("async fn ") else {
+            continue;
+        };
+        if pending_signal {
+            pending_signal = false;
+            continue;
+        }
+        if let Some(name) = after.split('(').next() {
+            methods.push(name.to_string());
+        }
+    }
+    methods
 }
 
 #[test]

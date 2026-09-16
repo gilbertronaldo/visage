@@ -1,0 +1,10 @@
+[package]
+name = "visage-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "The Visage D-Bus client surface, defined once"
+
+[dependencies]
+zbus = { workspace = true }

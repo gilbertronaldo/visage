@@ -4,18 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::time::Duration;
 
-#[zbus::proxy(
-    interface = "org.freedesktop.Visage1",
-    default_service = "org.freedesktop.Visage1",
-    default_path = "/org/freedesktop/Visage1"
-)]
-trait Visage {
-    async fn enroll(&self, user: &str, label: &str) -> zbus::fdo::Result<String>;
-    async fn verify(&self, user: &str) -> zbus::fdo::Result<bool>;
-    async fn status(&self) -> zbus::fdo::Result<String>;
-    async fn list_models(&self, user: &str) -> zbus::fdo::Result<String>;
-    async fn remove_model(&self, user: &str, model_id: &str) -> zbus::fdo::Result<bool>;
-}
+use visage_ipc::VisageProxy;
 
 #[derive(Parser)]
 #[command(name = "visage", about = "Visage biometric authentication CLI")]
@@ -137,7 +126,10 @@ fn verify_timeout_secs() -> u64 {
 }
 
 async fn connect_proxy() -> Result<VisageProxy<'static>> {
-    let use_session = std::env::var("VISAGE_SESSION_BUS").is_ok();
+    // Was `env::var(..).is_ok()`, which read VISAGE_SESSION_BUS=0 as a *yes*
+    // and sent the client to the session bus while the daemon served the
+    // system one. Both sides read the same function now.
+    let use_session = visage_ipc::session_bus_from_env();
     let timeout = Duration::from_secs(verify_timeout_secs());
     let conn = if use_session {
         zbus::connection::Builder::session()?

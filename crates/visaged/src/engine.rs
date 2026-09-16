@@ -56,6 +56,10 @@ pub struct VerifyResult {
 enum EngineRequest {
     Enroll {
         frames_count: usize,
+        /// Where to send preview frames as they are captured, if the caller
+        /// wants them. `None` for callers that do not — the capture path is
+        /// then byte-identical to what it was before previews existed.
+        preview: Option<mpsc::Sender<PreviewFrame>>,
         reply: oneshot::Sender<Result<EnrollResult, EngineError>>,
     },
     Verify {
@@ -69,6 +73,57 @@ enum EngineRequest {
     },
 }
 
+/// Longest edge of an emitted preview frame, in pixels.
+///
+/// Deliberately small. It is enough to see whether a face is centred, lit and
+/// in frame, which is all the preview is for — and it is deliberately not
+/// enough to be a useful biometric capture. Full-resolution frames never leave
+/// the engine thread: downscaling happens here, before the frame crosses a
+/// channel, so there is no path on which a full-size frame reaches the bus.
+const PREVIEW_MAX_EDGE: usize = 160;
+
+/// A downscaled grayscale frame, emitted during enrollment so the client can
+/// show the user what the camera is seeing.
+#[derive(Debug, Clone)]
+pub struct PreviewFrame {
+    pub width: u32,
+    pub height: u32,
+    /// 8-bit grayscale, row-major, `width * height` bytes.
+    pub data: Vec<u8>,
+    /// The capture loop judged this frame too dark to use. It is emitted
+    /// anyway: "too dark" is the most actionable thing a user can be told.
+    pub is_dark: bool,
+}
+
+/// Nearest-neighbour downscale to `PREVIEW_MAX_EDGE` on the longest edge.
+///
+/// Nearest-neighbour rather than anything smoother on purpose — it is cheap
+/// enough to run between buffer dequeues without stalling capture, and a
+/// preview does not need to be pretty.
+fn to_preview(frame: &visage_hw::Frame) -> PreviewFrame {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let longest = w.max(h);
+    let scale = if longest > PREVIEW_MAX_EDGE {
+        longest.div_ceil(PREVIEW_MAX_EDGE)
+    } else {
+        1
+    };
+    let (ow, oh) = (w / scale, h / scale);
+    let mut data = Vec::with_capacity(ow * oh);
+    for y in 0..oh {
+        let src_row = (y * scale) * w;
+        for x in 0..ow {
+            data.push(frame.data[src_row + x * scale]);
+        }
+    }
+    PreviewFrame {
+        width: ow as u32,
+        height: oh as u32,
+        data,
+        is_dark: frame.is_dark,
+    }
+}
+
 /// Clone-safe handle to the engine thread.
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -77,11 +132,20 @@ pub struct EngineHandle {
 
 impl EngineHandle {
     /// Request enrollment: capture frames, detect best face, extract embedding.
-    pub async fn enroll(&self, frames_count: usize) -> Result<EnrollResult, EngineError> {
+    ///
+    /// `preview`, when given, receives downscaled frames as they are captured.
+    /// Sends are non-blocking and dropped under backpressure: a slow or absent
+    /// preview consumer must never slow down or fail an enrollment.
+    pub async fn enroll(
+        &self,
+        frames_count: usize,
+        preview: Option<mpsc::Sender<PreviewFrame>>,
+    ) -> Result<EnrollResult, EngineError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(EngineRequest::Enroll {
                 frames_count,
+                preview,
                 reply: reply_tx,
             })
             .await
@@ -191,6 +255,7 @@ pub fn spawn_engine(
                 let broken = match req {
                     EngineRequest::Enroll {
                         frames_count,
+                        preview,
                         reply,
                     } => {
                         let result = run_enroll(
@@ -199,6 +264,7 @@ pub fn spawn_engine(
                             &mut detector,
                             &mut recognizer,
                             frames_count,
+                            preview.as_ref(),
                         );
                         let broken = capture_looks_broken(&result);
                         let _ = reply.send(result);
@@ -298,9 +364,18 @@ fn run_enroll(
     detector: &mut visage_core::FaceDetector,
     recognizer: &mut visage_core::FaceRecognizer,
     frames_count: usize,
+    preview: Option<&mpsc::Sender<PreviewFrame>>,
 ) -> Result<EnrollResult, EngineError> {
     activate_emitter(emitter);
-    let capture_result = camera.capture_frames(frames_count);
+    // `try_send` rather than `send`: this closure runs between buffer dequeues
+    // on the engine thread, so blocking here would stall the capture. A full
+    // channel means the client is not keeping up, and the right response is to
+    // drop the frame, not to slow the enrollment down.
+    let capture_result = camera.capture_frames_observed(frames_count, |frame| {
+        if let Some(tx) = preview {
+            let _ = tx.try_send(to_preview(frame));
+        }
+    });
     deactivate_emitter(emitter);
 
     let (frames, dark_skipped) = capture_result?;
@@ -540,5 +615,113 @@ mod tests {
             }
         )));
         assert!(!capture_looks_broken::<()>(&Ok(())));
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    fn frame(w: u32, h: u32, is_dark: bool) -> visage_hw::Frame {
+        // A horizontal gradient, so a downscale that samples nothing (or the
+        // same pixel repeatedly) is distinguishable from one that works.
+        let data = (0..(w as usize * h as usize))
+            .map(|i| (i % w as usize) as u8)
+            .collect();
+        visage_hw::Frame {
+            data,
+            width: w,
+            height: h,
+            timestamp: std::time::Instant::now(),
+            sequence: 0,
+            is_dark,
+        }
+    }
+
+    /// Pin the constant itself, with a literal.
+    ///
+    /// The test below asserts the downscaler honours `PREVIEW_MAX_EDGE`. It
+    /// cannot notice `PREVIEW_MAX_EDGE` being raised, because it compares
+    /// against that same constant — so on its own it would pass just as well
+    /// at 2000px, and the "too small to be a useful biometric capture"
+    /// argument would have quietly evaporated.
+    ///
+    /// Raising this is a security decision about how much biometric detail
+    /// leaves the daemon, not a tuning knob. Changing the literal here is the
+    /// deliberate act that says someone thought about it.
+    #[test]
+    fn the_preview_size_cap_is_what_the_security_argument_assumes() {
+        assert_eq!(
+            PREVIEW_MAX_EDGE, 160,
+            "PREVIEW_MAX_EDGE changed. The preview is allowed out of the daemon \
+             because it is too coarse to be a useful capture; raising it needs a \
+             threat-model review, not just a passing test suite."
+        );
+    }
+
+    /// That the downscaler honours whatever the cap currently is.
+    #[test]
+    fn preview_never_exceeds_the_declared_maximum_edge() {
+        for (w, h) in [
+            (640, 480),
+            (640, 360),
+            (1280, 720),
+            (1920, 1080),
+            (320, 240),
+        ] {
+            let p = to_preview(&frame(w, h, false));
+            let longest = p.width.max(p.height) as usize;
+            assert!(
+                longest <= PREVIEW_MAX_EDGE,
+                "{w}x{h} produced a {}x{} preview, longest edge {longest} > {PREVIEW_MAX_EDGE}",
+                p.width,
+                p.height
+            );
+        }
+    }
+
+    #[test]
+    fn data_length_matches_the_declared_dimensions() {
+        // A client reading `width * height` bytes must not run off the end, and
+        // must not silently render a truncated frame as if it were whole.
+        for (w, h) in [(640, 480), (640, 360), (100, 80), (161, 161)] {
+            let p = to_preview(&frame(w, h, false));
+            assert_eq!(
+                p.data.len(),
+                p.width as usize * p.height as usize,
+                "{w}x{h}: data is {} bytes for a {}x{} frame",
+                p.data.len(),
+                p.width,
+                p.height
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_already_small_enough_is_left_alone() {
+        let src = frame(100, 80, false);
+        let p = to_preview(&src);
+        assert_eq!((p.width, p.height), (100, 80));
+        assert_eq!(p.data, src.data, "a no-op downscale altered the pixels");
+    }
+
+    /// Without this the tests above would pass on a downscaler that returned a
+    /// correctly-sized block of zeros.
+    #[test]
+    fn downscaling_actually_samples_the_source() {
+        let p = to_preview(&frame(640, 480, false));
+        let distinct: std::collections::HashSet<u8> = p.data.iter().copied().collect();
+        assert!(
+            distinct.len() > 1,
+            "every pixel is identical ({distinct:?}) — the downscale is not reading the source"
+        );
+    }
+
+    #[test]
+    fn the_dark_verdict_survives_downscaling() {
+        // The client renders "too dark" from this flag; losing it here would
+        // turn the most useful feedback into a silently normal-looking frame.
+        assert!(to_preview(&frame(640, 480, true)).is_dark);
+        assert!(!to_preview(&frame(640, 480, false)).is_dark);
     }
 }

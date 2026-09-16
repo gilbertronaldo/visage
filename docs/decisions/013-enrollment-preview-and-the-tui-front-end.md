@@ -143,20 +143,52 @@ one diagnosable.
 
 ## Remaining work
 
-1. **Strobe-differential liveness.** The highest-value item on this hardware.
-   `liveness.minDisplacement` is set to 0.1 on the-first — a gate that barely gates —
-   because the landmark metric measurably cannot separate a phone-screen spoof from a live
-   face on `3277:0055` (ADR 011's own hardware validation). Meanwhile this module's IR
-   emitter strobes lit/unlit every frame by firmware default, confirmed at 10 good / 9 dark
-   frames with mean brightness 54.8. A live face reflects the emitter and alternates
-   strongly; a self-emissive display does not. `threat-model.md` already lists odd/even
-   frame analysis as roadmap, and the signal is being produced with nothing consuming it.
+1. **Strobe-differential liveness — blocked on a MEASUREMENT, not on code.**
 
-2. **A contract test for the `preview_frame` signal.** `dbus_contract.rs` deliberately
-   skips signal declarations, because the server's declaration carries a `SignalEmitter`
-   that never reaches the wire and would fail a naive arity check. Filtering that one
-   parameter would make the check real. The signatures currently agree — verified by
-   reading them, which is exactly the kind of assurance this repo has learned not to trust.
+   `liveness.minDisplacement` is 0.1 on the-first — a gate that barely gates — because the
+   landmark metric measurably cannot separate a phone-screen spoof from a live face on
+   `3277:0055` (ADR 011's own hardware validation). This module's IR emitter strobes
+   lit/unlit every frame by firmware default: confirmed live at 10 good / 9 dark frames,
+   strict alternation after warmup (`seq` 0, 3, 5, 7, 9 … over 19 attempts), lit-frame
+   mean brightness 54.8 with 10.7% of pixels above 100. A live face reflects the emitter
+   and should swing hard between halves; a self-emissive display should not.
+   `threat-model.md` already lists odd/even frame analysis as roadmap, and the signal is
+   being produced with nothing consuming it.
+
+   Explored 2026-09-16. Three findings:
+
+   - ⛔ **The unlit half is discarded before liveness sees it.** In `capture_inner` a dark
+     frame is counted, handed to `observe`, then `continue`d — it never enters
+     `good_frames`. `run_verify` calls `capture_frames` (no observer), so liveness receives
+     lit frames only. The pipeline throws away exactly the frames the technique needs.
+   - ⭐ **The seam already exists.** `capture_frames_observed`, added for the preview,
+     already surfaces dark frames to a callback. Pointing verify at it would give liveness
+     both halves with **no new camera API**.
+   - ⛔ **The measurement instrument does not exist.** `visage test` also calls
+     `capture_frames` and saves only good frames, so the lit-vs-unlit delta that the whole
+     technique rests on has never been measured — here or anywhere.
+
+   **Do the measurement before the gate.** ADR 011 implemented a metric that looked
+   physically sound and failed on hardware; a second plausible-sounding metric shipped
+   without evidence would repeat that exactly. The instrument is one small change — switch
+   `visage test` to `capture_frames_observed` and write dark frames as `dark-NNN.pgm` —
+   followed by a human-in-the-loop run (live, then a phone showing the same face) comparing
+   face-region delta between halves.
+
+   ⚠️ Note for whoever does it: on this module the daemon does **not** control the emitter.
+   The strobe is firmware-driven and free-running, so lit/unlit must be inferred from
+   `is_dark` rather than from something we commanded. Workable, but it makes the technique
+   depend on sensor behaviour we do not drive, and it may not generalise to a quirked
+   device where the emitter is held on for the whole capture.
+
+2. ✅ **Done — the `preview_frame` signal now has a contract test.** `dbus_contract.rs`
+   skipped signals because the server's declaration carries a `SignalEmitter` that never
+   reaches the wire, making the server count 5 arguments against the client's 4. Filtering
+   that one parameter makes the comparison possible; `declared_signals()` is the exact
+   inverse of `proxy_methods()`, and the two must partition the declarations. Five controls
+   guard it, including that the method parser does not count the signal and vice versa —
+   a new test that silently parsed nothing would otherwise restore the old state while
+   looking green.
 
 3. **Deploy.** the-first still runs `0.4.0-rc.1`. The esver-os pin is bumped and staged;
    the node gets none of this until a rebuild.

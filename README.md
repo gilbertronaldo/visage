@@ -3,7 +3,7 @@
 **Linux face authentication via PAM — persistent daemon, IR camera support, ONNX inference.**
 
 The Windows Hello equivalent for Linux. Visage authenticates `sudo`, login, and any
-PAM-gated service using your face — with sub-second response and no subprocess overhead.
+PAM-gated service using your face — no subprocess spawn, no interpreter startup, no model reload.
 
 > Built in Rust by [Sovren Software](https://sovren.software). Ships standalone on any Linux system.
 
@@ -12,7 +12,15 @@ PAM-gated service using your face — with sub-second response and no subprocess
 Visage runs as a persistent daemon: SCRFD face detection and ArcFace recognition are loaded
 once at startup via ONNX Runtime, and camera ownership is held across auth requests. Compare
 to [Howdy](https://github.com/boltgolt/howdy) — Python subprocess per auth attempt, 2–3s
-cold start, no IR emitter integration. Visage completes a warm recognition in ~200ms.
+cold start, no IR emitter integration.
+
+⚠️ **On measured latency Visage does not yet beat Howdy by much.** The architecture removes
+Howdy's per-auth startup cost, but the delivered number on our reference IR module is a
+**median 2,273 ms** verify (max 2,329 ms over 10 runs) against Howdy's 2–3s. The design
+budgeted <200ms of inference; CPU-only ONNX does not deliver that, and the verify path runs
+recognition on every captured frame rather than the best one. **The pipeline has never been
+profiled**, so where the remaining ~2s goes is genuinely unknown. Tracked in
+[STATUS](docs/STATUS.md) and honestly unmet; do not quote a sub-second figure for Visage.
 
 Built in Rust for memory safety throughout the authentication path. Integrates via standard
 Linux-PAM — no kernel patches, no modified sudo.
@@ -310,7 +318,10 @@ End-to-end acceptance test — CCX20, USB webcam `/dev/video2`, GREY format, CPU
 | PAM stack (no terminal output on failure) | ✅ |
 | Suspend/resume via `visage-resume.service` | ✅ |
 
-Latency: ~1.4s on USB webcam + CPU-only ONNX. Expected <500ms with IR camera + GPU.
+Latency: ~1.4s on USB webcam + CPU-only ONNX; **median 2,273 ms on the `3277:0055` IR
+module**. The <500ms target is **not met** and is not close. An earlier version of this README
+claimed "~200ms warm recognition" — that number was a *prediction* from the pre-build design
+doc, never a measurement, and it is withdrawn.
 
 Bugs fixed during testing: [DeviceAllow glob](docs/STATUS.md#bugs-found-during-testing),
 [tokio::time::timeout panic in zbus context](docs/STATUS.md#bugs-found-during-testing).

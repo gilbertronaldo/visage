@@ -141,8 +141,5 @@ fn lookup_is_case_insensitive() {
         String::from_utf8_lossy(&upper.stdout).trim(),
         "uppercase and lowercase VID:PID gave different answers"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&lower.stdout).trim(),
-        q.device.name
-    );
+    assert_eq!(String::from_utf8_lossy(&lower.stdout).trim(), q.device.name);
 }

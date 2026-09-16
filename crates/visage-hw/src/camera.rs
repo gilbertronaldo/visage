@@ -54,6 +54,19 @@ pub struct Camera {
     pixel_format: PixelFormat,
 }
 
+/// What ends a capture loop.
+///
+/// Counted captures want N usable frames and accept a bounded number of
+/// attempts to get them. The framing phase wants a predictable slice of the
+/// user's attention and does not care how many frames arrive.
+#[derive(Debug, Clone, Copy)]
+enum Budget {
+    /// Stop after this many non-dark frames, or `3x` that many attempts.
+    Frames(usize),
+    /// Stop at this instant, however many frames arrived.
+    Until(std::time::Instant),
+}
+
 impl Camera {
     /// Open a V4L2 camera device by path (e.g., "/dev/video2").
     pub fn open(device_path: &str) -> Result<Self, CameraError> {
@@ -291,14 +304,75 @@ impl Camera {
     pub fn capture_frames_observed<F>(
         &self,
         count: usize,
+        observe: F,
+    ) -> Result<(Vec<Frame>, usize), CameraError>
+    where
+        F: FnMut(&Frame),
+    {
+        self.capture_inner(Budget::Frames(count), true, observe)
+    }
+
+    /// Stream frames to `observe` for up to `budget`, retaining none of them.
+    ///
+    /// This is the framing phase: the frames are for the human, not the model.
+    /// The user needs a moment to see themselves and get centred before a
+    /// capture commits, and every frame in that window is discarded.
+    ///
+    /// ⚠️ It is bounded by TIME, not by a frame count, and that is deliberate.
+    /// The counted path only credits *non-dark* frames toward its target, so on
+    /// hardware where most frames read dark — an unquirked emitter, which is
+    /// exactly where a preview helps most — asking for N good frames can block
+    /// for `N * 3` dequeues. A framing phase must occupy a predictable slice of
+    /// the user's attention, so it takes a deadline.
+    ///
+    /// ⚠️ This is not free of side effects on the capture that follows. Sensor
+    /// auto-gain only adapts while streaming, so holding the stream open here
+    /// acts as an extended warmup and leaves AGC in a different state than a
+    /// bare capture would. That is very likely an improvement — it is the same
+    /// mechanism #104 relied on — but it is a real change to capture
+    /// conditions, not a no-op.
+    ///
+    /// Returns the number of frames skipped as too dark.
+    pub fn stream_frames_for<F>(
+        &self,
+        budget: std::time::Duration,
+        observe: F,
+    ) -> Result<usize, CameraError>
+    where
+        F: FnMut(&Frame),
+    {
+        self.capture_inner(
+            Budget::Until(std::time::Instant::now() + budget),
+            false,
+            observe,
+        )
+        .map(|(_, dark)| dark)
+    }
+
+    /// The one capture loop. Every public entry point above funnels through it,
+    /// so the authentication path and the enrollment path cannot diverge.
+    fn capture_inner<F>(
+        &self,
+        budget: Budget,
+        keep: bool,
         mut observe: F,
     ) -> Result<(Vec<Frame>, usize), CameraError>
     where
         F: FnMut(&Frame),
     {
         self.reassert_format()?;
-        let max_attempts = count * 3;
-        let mut good_frames = Vec::with_capacity(count);
+        let wanted = match budget {
+            Budget::Frames(n) => n,
+            Budget::Until(_) => 0,
+        };
+        let max_attempts = wanted.saturating_mul(3);
+        let mut good_frames = if keep {
+            Vec::with_capacity(wanted)
+        } else {
+            Vec::new()
+        };
+        let mut good = 0usize;
+        let mut attempts = 0usize;
         let mut dark_count = 0usize;
 
         let mut stream =
@@ -306,10 +380,20 @@ impl Camera {
                 CameraError::CaptureFailed(format!("failed to create mmap stream: {e}"))
             })?;
 
-        for _ in 0..max_attempts {
-            if good_frames.len() >= count {
-                break;
+        loop {
+            match budget {
+                Budget::Frames(_) => {
+                    if good >= wanted || attempts >= max_attempts {
+                        break;
+                    }
+                }
+                Budget::Until(deadline) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
             }
+            attempts += 1;
 
             let (buf, meta) = stream.next().map_err(|e| {
                 CameraError::CaptureFailed(format!("failed to dequeue buffer: {e}"))
@@ -345,7 +429,10 @@ impl Camera {
                 is_dark: false,
             };
             observe(&frame);
-            good_frames.push(frame);
+            good += 1;
+            if keep {
+                good_frames.push(frame);
+            }
         }
 
         Ok((good_frames, dark_count))

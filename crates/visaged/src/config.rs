@@ -18,6 +18,12 @@ pub struct Config {
     pub frames_per_verify: usize,
     /// Number of frames to capture per enroll attempt.
     pub frames_per_enroll: usize,
+    /// How long to stream framing frames to the enrolling client before each
+    /// capture. These are shown to the user so they can get centred, and are
+    /// then discarded — they never reach the model.
+    ///
+    /// Zero disables the framing phase, restoring pre-framing behaviour.
+    pub framing_duration: std::time::Duration,
     /// Whether to activate the IR emitter around each capture sequence.
     pub emitter_enabled: bool,
     /// Whether passive liveness detection (landmark stability) is enabled.
@@ -60,6 +66,10 @@ impl Config {
             warmup_frames: env_usize("VISAGE_WARMUP_FRAMES", 4),
             frames_per_verify: env_usize("VISAGE_FRAMES_PER_VERIFY", 3),
             frames_per_enroll: env_usize("VISAGE_FRAMES_PER_ENROLL", 5),
+            // 1.5s is long enough to see yourself and move, short enough that
+            // four labels do not make onboarding feel slow. Bounded by time
+            // rather than frames on purpose: see `Camera::stream_frames_for`.
+            framing_duration: std::time::Duration::from_millis(env_u64("VISAGE_FRAMING_MS", 1500)),
             emitter_enabled: std::env::var("VISAGE_EMITTER_ENABLED")
                 .map(|v| v != "0")
                 .unwrap_or(true),

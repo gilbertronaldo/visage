@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **A framing phase before each enrollment capture.** The user gets a moment to see
+  themselves and get centred before anything is captured, instead of being told to
+  look at a lens and hoping.
+
+  Frames stream to the enrolling client for `VISAGE_FRAMING_MS` (default 1500) and
+  are then discarded — they never reach the model. Setting it to `0` disables the
+  phase. A client that does not ask for previews skips it entirely, so scripted and
+  headless enrollments pay none of its latency.
+
+  ⚠️ This is not purely additive. Sensor auto-gain only adapts while the camera is
+  streaming, so holding the stream open for framing acts as an extended warmup and
+  leaves AGC in a different state than a bare capture would. That is very likely an
+  improvement — it is the same mechanism behind the #104 fix — but it is a real
+  change to capture conditions rather than a no-op.
+
+  Bounded by time rather than by a frame count on purpose: the counted capture path
+  credits only non-dark frames toward its target, so on hardware where most frames
+  read dark — an unquirked emitter, which is exactly where a preview helps most —
+  asking for N frames can block for `N * 3` dequeues.
+
 ## v0.4.0 — 2026-09-16
 
 The first stable 0.4.0. It carries everything in v0.4.0-rc.1 below — one-command
@@ -9,6 +31,22 @@ onboarding via `visage onboard`, the configurable PAM timeout, the first integra
 tests, and the repaired tag-triggered release pipeline — plus the changes listed here.
 
 ### Added
+
+- **`PreviewFrame` — the daemon can show a client what the camera sees during an
+  enrollment.** Enrollment was previously blind: four captures happened and nothing
+  said whether the user was too dark, off-centre or out of frame.
+
+  There is deliberately **no method to request a camera frame**. The only producer is
+  an `Enroll` the caller started, frames are unicast to that caller's own bus name
+  rather than broadcast, and the channel lives for exactly the duration of that call —
+  so the preview cannot be used as a general camera tap, and it adds no privilege
+  boundary beyond `Enroll`'s existing root-only check.
+
+  Frames are 8-bit grayscale, downscaled **in the engine thread before crossing any
+  channel** to at most 160px on the longest edge: enough to check framing, and
+  deliberately not enough to be a useful biometric capture. Frames the capture loop
+  rejects as too dark are emitted too, flagged — "too dark" is the most actionable
+  thing a user can be told, and it is only knowable inside that loop.
 
 - **IR emitter quirk for the Lenovo ThinkPad P14s Gen 4 — Syntek `174f:11a8`.** The
   project's third externally contributed quirk, and the second from this contributor.

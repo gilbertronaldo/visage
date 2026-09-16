@@ -38,6 +38,23 @@ async fn get_caller_uid(sender_str: &str, conn: &zbus::Connection) -> zbus::fdo:
         .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
 }
 
+/// How long the framing phase should run for this enrollment.
+///
+/// Framing exists so a human can see themselves and get centred. With no
+/// preview channel there is no human watching, and the phase is pure added
+/// latency on the authentication-adjacent path — so it collapses to zero.
+///
+/// Keeping this as its own function rather than an inline `if` is deliberate:
+/// it is the rule "a client that does not want previews pays none of their
+/// cost", and a rule worth stating is worth being able to assert.
+fn framing_for(has_preview: bool, configured: std::time::Duration) -> std::time::Duration {
+    if has_preview {
+        configured
+    } else {
+        std::time::Duration::ZERO
+    }
+}
+
 /// Look up the numeric UID for a username via NSS.
 fn uid_for_name(name: &str) -> Option<u32> {
     match User::from_name(name) {
@@ -98,12 +115,13 @@ impl VisageService {
         tracing::info!(user, label, "enroll requested");
 
         // Copy values while holding lock, then release
-        let (engine, frames_count, session_bus) = {
+        let (engine, frames_count, session_bus, framing) = {
             let state = self.state.lock().await;
             (
                 state.engine.clone(),
                 state.config.frames_per_enroll,
                 state.config.session_bus,
+                state.config.framing_duration,
             )
         };
 
@@ -157,10 +175,15 @@ impl VisageService {
 
         // Run engine (no lock held). The sender is moved in and dropped when the
         // engine finishes with it, which closes the channel and ends the task.
-        let result = engine.enroll(frames_count, preview_tx).await.map_err(|e| {
-            tracing::error!(error = %e, "enroll failed");
-            zbus::fdo::Error::Failed(e.to_string())
-        })?;
+        let framing = framing_for(preview_tx.is_some(), framing);
+
+        let result = engine
+            .enroll(frames_count, preview_tx, framing)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "enroll failed");
+                zbus::fdo::Error::Failed(e.to_string())
+            })?;
 
         tracing::info!(
             quality = result.quality_score,
@@ -420,5 +443,33 @@ impl VisageService {
             tracing::warn!(model_id, user, "model not found or not owned by user");
         }
         Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::framing_for;
+    use std::time::Duration;
+
+    const CONFIGURED: Duration = Duration::from_millis(1500);
+
+    #[test]
+    fn a_client_that_wants_previews_gets_the_configured_window() {
+        assert_eq!(framing_for(true, CONFIGURED), CONFIGURED);
+    }
+
+    /// The rule that matters: framing is latency on an enrollment path, and a
+    /// caller with nowhere to send frames must not pay it. Without this, every
+    /// scripted or headless enrollment would silently get slower.
+    #[test]
+    fn a_client_without_a_preview_channel_pays_nothing() {
+        assert_eq!(framing_for(false, CONFIGURED), Duration::ZERO);
+    }
+
+    /// Zero is the documented disable switch, so it must survive the path that
+    /// would otherwise be the "yes, framing" branch.
+    #[test]
+    fn zero_stays_zero_even_with_a_watcher() {
+        assert_eq!(framing_for(true, Duration::ZERO), Duration::ZERO);
     }
 }

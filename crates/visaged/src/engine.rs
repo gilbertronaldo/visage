@@ -60,6 +60,8 @@ enum EngineRequest {
         /// wants them. `None` for callers that do not — the capture path is
         /// then byte-identical to what it was before previews existed.
         preview: Option<mpsc::Sender<PreviewFrame>>,
+        /// How long to stream framing frames before capturing. Zero skips it.
+        framing: std::time::Duration,
         reply: oneshot::Sender<Result<EnrollResult, EngineError>>,
     },
     Verify {
@@ -140,12 +142,14 @@ impl EngineHandle {
         &self,
         frames_count: usize,
         preview: Option<mpsc::Sender<PreviewFrame>>,
+        framing: std::time::Duration,
     ) -> Result<EnrollResult, EngineError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(EngineRequest::Enroll {
                 frames_count,
                 preview,
+                framing,
                 reply: reply_tx,
             })
             .await
@@ -256,6 +260,7 @@ pub fn spawn_engine(
                     EngineRequest::Enroll {
                         frames_count,
                         preview,
+                        framing,
                         reply,
                     } => {
                         let result = run_enroll(
@@ -265,6 +270,7 @@ pub fn spawn_engine(
                             &mut recognizer,
                             frames_count,
                             preview.as_ref(),
+                            framing,
                         );
                         let broken = capture_looks_broken(&result);
                         let _ = reply.send(result);
@@ -365,8 +371,34 @@ fn run_enroll(
     recognizer: &mut visage_core::FaceRecognizer,
     frames_count: usize,
     preview: Option<&mpsc::Sender<PreviewFrame>>,
+    framing: std::time::Duration,
 ) -> Result<EnrollResult, EngineError> {
     activate_emitter(emitter);
+
+    // Framing phase: give the user a moment to see themselves and get centred
+    // before anything is captured. Frames go to the client and are discarded.
+    //
+    // Only worth doing when someone is actually watching — with no preview
+    // channel this is pure latency, so it is skipped. The emitter is already
+    // active, so framing frames are lit the way the real capture will be;
+    // showing an unlit preview of a capture that will be lit would be worse
+    // than showing nothing.
+    if let Some(tx) = preview {
+        if !framing.is_zero() {
+            match camera.stream_frames_for(framing, |frame| {
+                let _ = tx.try_send(to_preview(frame));
+            }) {
+                Ok(dark) => tracing::debug!(dark, "enroll: framing phase complete"),
+                // A framing failure is not an enrollment failure. The capture
+                // below is what matters; losing the preview should never cost
+                // the user their enrollment.
+                Err(e) => {
+                    tracing::warn!(error = %e, "enroll: framing phase failed, capturing anyway")
+                }
+            }
+        }
+    }
+
     // `try_send` rather than `send`: this closure runs between buffer dequeues
     // on the engine thread, so blocking here would stall the capture. A full
     // channel means the client is not keeping up, and the right response is to

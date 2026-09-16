@@ -1,10 +1,11 @@
 use nix::unistd::User;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 
 use crate::config::Config;
-use crate::engine::{EngineError, EngineHandle};
+use crate::engine::{EngineError, EngineHandle, PreviewFrame};
 use crate::rate_limiter::RateLimiter;
 use crate::store::FaceModelStore;
 
@@ -109,8 +110,54 @@ impl VisageService {
         // Defense-in-depth (enrollment is a privileged mutation).
         require_root_caller("Enroll", session_bus, &header, conn).await?;
 
-        // Run engine (no lock held)
-        let result = engine.enroll(frames_count).await.map_err(|e| {
+        // --- Preview: unicast PreviewFrame signals, for this enrollment only ---
+        //
+        // There is deliberately no method to ask for a camera frame. The only
+        // producer is an Enroll the caller started, and the frames go only to
+        // that caller's own bus name — so the preview cannot be used as a
+        // general camera tap, and it inherits Enroll's root-only policy without
+        // adding a second privilege boundary. The channel lives for exactly the
+        // duration of this call.
+        //
+        // Frames are already downscaled by the engine before they reach here;
+        // full-resolution captures never cross a channel.
+        let preview_tx = match header.sender() {
+            Some(sender) => {
+                let dest = sender.to_string();
+                // Small buffer: a preview is only useful live, so a stale frame
+                // is worth less than the memory to hold it.
+                let (tx, mut rx) = mpsc::channel::<PreviewFrame>(8);
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    while let Some(f) = rx.recv().await {
+                        // A failed emit is not an enrollment failure. The client
+                        // may have gone away, and enrollment must not depend on
+                        // anything about the preview succeeding.
+                        if let Err(e) = conn
+                            .emit_signal(
+                                Some(dest.as_str()),
+                                "/org/freedesktop/Visage1",
+                                "org.freedesktop.Visage1",
+                                "PreviewFrame",
+                                &(f.width, f.height, f.is_dark, f.data),
+                            )
+                            .await
+                        {
+                            tracing::debug!(error = %e, "preview emit failed; stopping preview");
+                            break;
+                        }
+                    }
+                });
+                Some(tx)
+            }
+            // No sender means no unicast destination — emit nothing rather than
+            // broadcasting camera frames to the whole bus.
+            None => None,
+        };
+
+        // Run engine (no lock held). The sender is moved in and dropped when the
+        // engine finishes with it, which closes the channel and ends the task.
+        let result = engine.enroll(frames_count, preview_tx).await.map_err(|e| {
             tracing::error!(error = %e, "enroll failed");
             zbus::fdo::Error::Failed(e.to_string())
         })?;
@@ -134,6 +181,25 @@ impl VisageService {
         tracing::info!(model_id = %model_id, user, label, "enrolled successfully");
         Ok(model_id)
     }
+
+    /// A downscaled camera frame captured during an in-flight `Enroll`.
+    ///
+    /// Sent only to the caller that started that enrollment, only while it is
+    /// running. `is_dark` marks a frame the capture loop rejected as too dark —
+    /// those are emitted precisely because "too dark" is the most useful thing
+    /// a user can be told while enrolling.
+    ///
+    /// `data` is 8-bit grayscale, row-major, `width * height` bytes, downscaled
+    /// to at most 160px on the longest edge: enough to check framing, and
+    /// deliberately not enough to be a useful biometric capture.
+    #[zbus(signal)]
+    async fn preview_frame(
+        signal_emitter: &SignalEmitter<'_>,
+        width: u32,
+        height: u32,
+        is_dark: bool,
+        data: &[u8],
+    ) -> zbus::Result<()>;
 
     /// Verify the current face against enrolled models for the given user.
     ///

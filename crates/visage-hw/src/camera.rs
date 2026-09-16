@@ -267,6 +267,35 @@ impl Camera {
     /// Attempts up to `count * 3` raw captures to find `count` non-dark frames.
     /// Each non-dark frame gets CLAHE contrast enhancement applied.
     pub fn capture_frames(&self, count: usize) -> Result<(Vec<Frame>, usize), CameraError> {
+        self.capture_frames_observed(count, |_| {})
+    }
+
+    /// `capture_frames`, with every dequeued frame handed to `observe` as it
+    /// arrives — including the dark ones that are skipped.
+    ///
+    /// This exists so enrollment can show the user what the camera is seeing
+    /// while it captures. Blind enrollment is the single biggest gap in the
+    /// first-run experience: the user stares at a lens, the capture either
+    /// works or does not, and nothing says whether they were too dark, too
+    /// close, or out of frame.
+    ///
+    /// The dark frames matter most and are exactly the ones the capture loop
+    /// throws away, so `observe` is called for those too, with `is_dark` set
+    /// and no contrast enhancement applied — the client can then say "too
+    /// dark" rather than silently showing nothing.
+    ///
+    /// `capture_frames` delegates here with a no-op closure, so the
+    /// authentication path runs this identical code and cannot diverge from
+    /// the enrollment path. `observe` must not block: it runs between buffer
+    /// dequeues, and stalling it stalls the capture.
+    pub fn capture_frames_observed<F>(
+        &self,
+        count: usize,
+        mut observe: F,
+    ) -> Result<(Vec<Frame>, usize), CameraError>
+    where
+        F: FnMut(&Frame),
+    {
         self.reassert_format()?;
         let max_attempts = count * 3;
         let mut good_frames = Vec::with_capacity(count);
@@ -291,20 +320,32 @@ impl Camera {
             if frame::is_dark_frame(&gray, 0.95) {
                 dark_count += 1;
                 tracing::debug!(seq = meta.sequence, "skipping dark frame");
+                // Surface it anyway: "too dark" is the most useful thing the
+                // user can be told, and it is only knowable here.
+                observe(&Frame {
+                    data: gray,
+                    width: self.width,
+                    height: self.height,
+                    timestamp: std::time::Instant::now(),
+                    sequence: meta.sequence,
+                    is_dark: true,
+                });
                 continue;
             }
 
             // Apply CLAHE contrast enhancement
             frame::clahe_enhance(&mut gray, self.width, self.height, 8, 0.02);
 
-            good_frames.push(Frame {
+            let frame = Frame {
                 data: gray,
                 width: self.width,
                 height: self.height,
                 timestamp: std::time::Instant::now(),
                 sequence: meta.sequence,
                 is_dark: false,
-            });
+            };
+            observe(&frame);
+            good_frames.push(frame);
         }
 
         Ok((good_frames, dark_count))

@@ -19,7 +19,7 @@ are active in the current codebase. Items marked **(roadmap)** are not yet prese
 | Brute force (repeated attempts) | Rate limiting + lockout after N failures | ✅ v0.3 — implemented |
 | Stolen photo (printed) | Passive liveness (landmark stability) + IR emitter support | ✅ v0.3 — landmark stability rejects static images; IR recommended. ⚠️ Verdict predates the 2026-08-17 hardware validation and is **not** revised on it; see the note below. |
 | Model tampering / substitution | Strict SHA-256 verification on download + daemon startup | ✅ v0.3 — implemented |
-| Replay attack (recorded video) | IR strobe pattern detection (odd/even frame analysis) | ⬜ Roadmap — IR emitter is on but no strobe challenge |
+| Replay attack (recorded video) | IR strobe pattern detection (odd/even frame analysis) | ⛔ **Measured and rejected 2026-09-16** on `3277:0055` — a phone screen swings 1.71× MORE than a live face (specular glass vs diffuse skin), and the value is attacker-controllable by tilt. See the [hardware report](hardware-reports/asus-zenbook-um3406ha-3277-0055.md). |
 | Unauthorized enrollment | Root-only enrollment via D-Bus policy | ✅ v0.3 — D-Bus policy restricts Enroll to root |
 | Timing side channel | Constant-time embedding comparison | ✅ v0.3 — `CosineMatcher` always processes all gallery entries |
 | Login hang (daemon crash) | 3-second PAM call timeout | ✅ v0.3 (Step 6) — `method_timeout(3s)` via zbus connection builder |

@@ -309,7 +309,7 @@ impl Camera {
     where
         F: FnMut(&Frame),
     {
-        self.capture_inner(Budget::Frames(count), true, observe)
+        self.capture_inner(Budget::Frames(count), true, true, observe)
     }
 
     /// Stream frames to `observe` for up to `budget`, retaining none of them.
@@ -344,6 +344,38 @@ impl Camera {
         self.capture_inner(
             Budget::Until(std::time::Instant::now() + budget),
             false,
+            true,
+            observe,
+        )
+        .map(|(_, dark)| dark)
+    }
+
+    /// Stream frames for `budget` with **no CLAHE**, retaining none of them.
+    ///
+    /// For measurement, not for recognition. The other entry points equalise
+    /// contrast on lit frames and leave dark ones raw, which is right for a
+    /// preview — both look to the user like what the camera sees — and wrong for
+    /// physics. Comparing brightness across the IR emitter's lit/unlit strobe
+    /// requires both halves to have had the same thing done to them, which is
+    /// nothing.
+    ///
+    /// One stream for the whole window, so consecutive frames are genuinely
+    /// adjacent. `capture_frame` cannot serve this: it builds a new `MmapStream`
+    /// per call, so a loop over it samples disconnected points in the strobe.
+    ///
+    /// Returns the number of dark frames seen.
+    pub fn stream_raw_frames_for<F>(
+        &self,
+        budget: std::time::Duration,
+        observe: F,
+    ) -> Result<usize, CameraError>
+    where
+        F: FnMut(&Frame),
+    {
+        self.capture_inner(
+            Budget::Until(std::time::Instant::now() + budget),
+            false,
+            false,
             observe,
         )
         .map(|(_, dark)| dark)
@@ -355,6 +387,7 @@ impl Camera {
         &self,
         budget: Budget,
         keep: bool,
+        clahe: bool,
         mut observe: F,
     ) -> Result<(Vec<Frame>, usize), CameraError>
     where
@@ -417,8 +450,16 @@ impl Camera {
                 continue;
             }
 
-            // Apply CLAHE contrast enhancement
-            frame::clahe_enhance(&mut gray, self.width, self.height, 8, 0.02);
+            // Apply CLAHE contrast enhancement.
+            //
+            // Skipped for measurement callers. CLAHE equalises contrast, and
+            // dark frames never receive it because they return above this line
+            // — so a CLAHE'd lit frame compared against a raw dark one measures
+            // the enhancement, not the sensor. Anything reasoning about the IR
+            // emitter's physical effect needs both halves raw.
+            if clahe {
+                frame::clahe_enhance(&mut gray, self.width, self.height, 8, 0.02);
+            }
 
             let frame = Frame {
                 data: gray,

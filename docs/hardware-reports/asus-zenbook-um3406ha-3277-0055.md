@@ -31,11 +31,44 @@ Three consequences, in order of severity:
    the quirk is absent, the illumination is not. See
    [the emitter section](#-the-ir-emitter-is-active-on-this-module-with-no-quirk).
 
-**The strobe is an unused anti-spoof primitive.** `threat-model.md` lists *"IR strobe pattern
-detection (odd/even frame analysis)"* as roadmap; on this hardware the signal is already being
-produced and nothing consumes it. A live face reflects the emitter and alternates strongly; a
-self-emissive display does not. That is a physical discriminator the landmark-stability metric
-provably lacks here.
+⛔ **CORRECTED 2026-09-16 — the strobe is NOT a usable anti-spoof primitive here, and the
+physical reasoning below was backwards.** This paragraph originally read: *"A live face reflects
+the emitter and alternates strongly; a self-emissive display does not. That is a physical
+discriminator the landmark-stability metric provably lacks here."* It was measured and it is
+false.
+
+`visage test --strobe` streams raw frames (no CLAHE, one stream) and reports the brightness
+swing between adjacent lit/unlit halves, on the brightest decile of pixels as a face proxy.
+Same session, same distance, 43 adjacent pairs each:
+
+| condition | mean | sd | min | median | max |
+|---|---|---|---|---|---|
+| live face | 119.73 | 7.50 | 98.93 | 123.38 | 125.57 |
+| phone screen | **205.28** | 56.63 | 105.51 | 247.85 | 253.84 |
+
+**The spoof swings 1.71× MORE than the live face.** A phone's glass is specular and mirrors the
+emitter straight back; skin is diffuse and absorbs much of it. The original claim neglected
+specular reflection entirely.
+
+⛔ **And the metric is attacker-controllable, which is what actually disqualifies it.** The
+spoof's delta decayed smoothly across a single 3-second hold as the phone tilted —
+`248 249 250 252 253 254 251 231 200 185 170 155 139 121 113 106` — and its last 8 pairs landed
+**inside the live band**. Nobody was attempting evasion; a hand moved. An attacker need only
+hold the screen at the angle that already sits in the live range, and the trace proves that
+angle exists and is trivially found.
+
+A fitted threshold (`delta < 126`, chosen as the live maximum) gives 100% live acceptance and
+19% spoof acceptance, Youden J = 0.814. That looks respectable and is not: the threshold was
+fitted to this very sample, so its live-acceptance is optimistic, and the 19% is exactly the
+attacker-selectable tail.
+
+⚠️ Untested and likely to behave oppositely: a **matte printed photo** is diffuse like skin, so
+this metric would probably miss it altogether. Any future work here must test print spoofs, not
+just screens.
+
+Raw data: [`data/strobe-3277-0055-live.tsv`](data/strobe-3277-0055-live.tsv) and
+[`data/strobe-3277-0055-phone-spoof.tsv`](data/strobe-3277-0055-phone-spoof.tsv). n=1 operator,
+n=1 spoof device, one session — the same sample limits this report already flags for liveness.
 
 Prior art on this exact machine: under Ubuntu 24.04 it ran Howdy 2.6.1 with
 `linux-enable-ir-emitter` 7.0.0-beta2 and reached **10/10 consecutive `sudo` authentications**,
@@ -241,7 +274,9 @@ services.visage = {
 
 The 0.8 default is not defensible on this module: it rejected ~1 in 6 genuine attempts while
 the hand-held spoof (0.681) cleared the live range regardless. Raising it back buys no measured
-protection. The real fix is strobe-differential analysis, not a threshold.
+protection. ⛔ An earlier version of this line proposed strobe-differential analysis as "the
+real fix"; that was measured on 2026-09-16 and rejected — see the correction above. **No
+measured anti-spoof mechanism exists for this module.** The password fallback is the control.
 
 ## Open work for this module
 

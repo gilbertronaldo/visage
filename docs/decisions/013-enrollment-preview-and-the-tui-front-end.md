@@ -143,7 +143,32 @@ one diagnosable.
 
 ## Remaining work
 
-1. **Strobe-differential liveness — blocked on a MEASUREMENT, not on code.**
+1. ⛔ **Strobe-differential liveness — MEASURED 2026-09-16 AND REJECTED.**
+
+   The instrument was built (`visage test --strobe`), the measurement was taken on
+   `3277:0055`, and the hypothesis is refuted in the opposite direction from what every
+   document in this repo predicted. **A phone screen swings 1.71× MORE than a live face**
+   (205.28 vs 119.73 mean top-decile delta, 43 adjacent pairs each): glass is specular and
+   mirrors the emitter back, skin is diffuse and absorbs it. The physical reasoning in the
+   hardware report neglected specular reflection.
+
+   What disqualifies it is not the inverted sign — a rule can be inverted — but that the
+   value is **attacker-controllable**. Across one 3-second hold the spoof's delta decayed
+   smoothly as the phone tilted (`254 … 231 200 185 170 155 139 121 113 106`) and its last
+   8 pairs landed inside the live band. No evasion was attempted; a hand moved.
+
+   Corrected in `docs/threat-model.md` and the hardware report, with raw data committed at
+   `docs/hardware-reports/data/strobe-3277-0055-*.tsv`. **No measured anti-spoof mechanism
+   exists for this module. The password fallback is the control**, which is what the README
+   warning already says.
+
+   ⚠️ Untested and likely to fail oppositely: a matte printed photo is diffuse like skin,
+   so this metric would probably miss it entirely. Any revival of this idea must test print
+   spoofs, multiple angles and multiple devices — not one screen at one angle.
+
+   The original framing, kept because the reasoning is still worth reading:
+
+   **Strobe-differential liveness — blocked on a MEASUREMENT, not on code.**
 
    `liveness.minDisplacement` is 0.1 on the-first — a gate that barely gates — because the
    landmark metric measurably cannot separate a phone-screen spoof from a live face on

@@ -53,6 +53,22 @@
   on the one platform Visage is the default authentication layer for, the phase could
   neither be tuned nor disabled. `0` disables it; `null` keeps the compiled 1500 ms.
 
+- **`visage test --strobe` — an instrument for measuring the IR emitter's lit/unlit swing.**
+  Streams raw frames (no CLAHE, one stream) and reports the brightness delta between adjacent
+  halves, on the brightest decile of pixels as a face proxy. Writes every frame plus a TSV
+  manifest per labelled run so two conditions can be compared. It gates nothing.
+
+  Needed a new camera method: `capture_frames_observed` CLAHE-equalises lit frames while dark
+  ones stay raw, so comparing them measures the enhancement rather than the sensor, and
+  `capture_frame` builds a new stream per call, which samples disconnected points in the
+  strobe. `Camera::stream_raw_frames_for` does neither.
+
+  ⛔ Its first result killed a roadmap item. `threat-model.md` listed IR strobe analysis as a
+  replay-attack countermeasure and the hardware report called it "an unused anti-spoof
+  primitive". Measured on `3277:0055`: a phone screen swings **1.71× more** than a live face,
+  because glass is specular and skin is diffuse — and the value is attacker-controllable by
+  tilt. Both documents are corrected and the raw data is committed.
+
 - **A contract test tying the daemon's knobs to the NixOS module**
   (`tests/nixos_options_contract.rs`), in both directions: every `VISAGE_*` the daemon
   reads must be settable from the module, and the module must not set one the daemon

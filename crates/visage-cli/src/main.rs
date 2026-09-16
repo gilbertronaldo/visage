@@ -92,6 +92,22 @@ enum Commands {
         /// Number of frames to capture
         #[arg(short = 'n', long, default_value = "10")]
         frames: usize,
+
+        /// Measure the IR emitter's lit/unlit strobe instead of the normal
+        /// diagnostic. Streams RAW frames (no CLAHE) and reports how far
+        /// brightness swings between the two halves.
+        #[arg(long)]
+        strobe: bool,
+
+        /// Seconds to stream when --strobe is given.
+        #[arg(long, default_value = "3")]
+        strobe_secs: u64,
+
+        /// Label for this run, e.g. "live" or "phone-spoof". Recorded in the
+        /// manifest and used as the output subdirectory, so two runs can be
+        /// compared without one overwriting the other.
+        #[arg(long, default_value = "unlabelled")]
+        label: String,
     },
 }
 
@@ -405,8 +421,18 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Test { device, frames } => {
-            run_camera_test(&device, frames)?;
+        Commands::Test {
+            device,
+            frames,
+            strobe,
+            strobe_secs,
+            label,
+        } => {
+            if strobe {
+                run_strobe_measurement(&device, strobe_secs, &label)?;
+            } else {
+                run_camera_test(&device, frames)?;
+            }
         }
     }
 
@@ -539,6 +565,175 @@ fn run_camera_test(device_path: &str, frame_count: usize) -> Result<()> {
     Ok(())
 }
 
+/// Mean of the brightest 10% of pixels — a face proxy that needs no ONNX.
+///
+/// Whole-frame mean dilutes the signal badly: a face occupies roughly 10% of
+/// this sensor's field (measured 24,745 of 230,400 pixels above 100 on a lit
+/// frame), so the other 90% of background drags the average toward the room.
+/// At close range under IR the face IS the brightest thing, so the top decile
+/// approximates it without loading a detector into a camera diagnostic.
+fn top_decile_mean(data: &[u8]) -> f32 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    // Counting sort over 256 buckets — O(n), no allocation of a sorted copy.
+    let mut hist = [0u32; 256];
+    for &b in data {
+        hist[b as usize] += 1;
+    }
+    let want = (data.len() / 10).max(1);
+    let mut taken = 0usize;
+    let mut sum = 0f64;
+    for value in (0..256).rev() {
+        let n = hist[value] as usize;
+        if n == 0 {
+            continue;
+        }
+        let take = n.min(want - taken);
+        sum += (value as f64) * (take as f64);
+        taken += take;
+        if taken >= want {
+            break;
+        }
+    }
+    (sum / taken as f64) as f32
+}
+
+/// Measure the IR emitter's lit/unlit strobe.
+///
+/// Why this exists: `liveness.minDisplacement` is set near zero on hardware
+/// where the landmark-stability metric provably cannot separate a phone-screen
+/// spoof from a live face (ADR 011). The emitter strobe is a candidate physical
+/// discriminator — a live face reflects IR and should swing hard between the
+/// halves, a self-emissive display should not — but that has never been
+/// measured. This produces the number. It does NOT gate anything.
+fn run_strobe_measurement(device_path: &str, secs: u64, label: &str) -> Result<()> {
+    println!("IR strobe measurement");
+    println!("=====================");
+    println!("  label:  {label}");
+
+    let camera = visage_hw::Camera::open(device_path)?;
+    println!(
+        "  device: {device_path}  {}x{}  {:?}",
+        camera.width, camera.height, camera.fourcc
+    );
+
+    let out_dir = std::path::PathBuf::from("/tmp/visage-strobe").join(label);
+    std::fs::create_dir_all(&out_dir)?;
+
+    struct Sample {
+        seq: u32,
+        dark: bool,
+        mean: f32,
+        top: f32,
+    }
+    let mut samples: Vec<Sample> = Vec::new();
+
+    println!("\nStreaming RAW frames for {secs}s — look at the camera and hold still.");
+    let budget = std::time::Duration::from_secs(secs);
+    let mut save_err: Option<String> = None;
+    camera.stream_raw_frames_for(budget, |frame| {
+        let kind = if frame.is_dark { "dark" } else { "lit" };
+        let path = out_dir.join(format!("{kind}-{:05}.pgm", frame.sequence));
+        if let Err(e) = save_pgm(&path, &frame.data, frame.width, frame.height) {
+            if save_err.is_none() {
+                save_err = Some(e.to_string());
+            }
+        }
+        samples.push(Sample {
+            seq: frame.sequence,
+            dark: frame.is_dark,
+            mean: frame.avg_brightness(),
+            top: top_decile_mean(&frame.data),
+        });
+    })?;
+
+    if let Some(e) = save_err {
+        // Do not let a write failure masquerade as a measurement.
+        anyhow::bail!("failed to save at least one frame: {e}");
+    }
+    if samples.is_empty() {
+        anyhow::bail!("captured no frames at all — nothing to measure");
+    }
+
+    // Manifest: the real output. The PGMs are evidence; this is the data.
+    let manifest = out_dir.join("frames.tsv");
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&manifest)?;
+        writeln!(f, "label\tseq\tis_dark\tmean\ttop_decile")?;
+        for s in &samples {
+            writeln!(
+                f,
+                "{label}\t{}\t{}\t{:.2}\t{:.2}",
+                s.seq, s.dark, s.mean, s.top
+            )?;
+        }
+    }
+
+    let lit: Vec<&Sample> = samples.iter().filter(|s| !s.dark).collect();
+    let dark: Vec<&Sample> = samples.iter().filter(|s| s.dark).collect();
+    let avg = |v: &[&Sample], f: fn(&Sample) -> f32| -> f32 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.iter().map(|s| f(*s)).sum::<f32>() / v.len() as f32
+    };
+
+    println!("\n  frames: {} total — {} lit, {} dark", samples.len(), lit.len(), dark.len());
+
+    if lit.is_empty() || dark.is_empty() {
+        println!(
+            "\n  ⚠️  Only one half of the strobe was seen, so there is no delta to report.\n     \
+             This sensor may not strobe, or the emitter may be held on. Nothing is wrong with \
+             the measurement — there is simply nothing to measure here."
+        );
+        println!("\n  manifest: {}", manifest.display());
+        return Ok(());
+    }
+
+    let lit_mean = avg(&lit, |s| s.mean);
+    let dark_mean = avg(&dark, |s| s.mean);
+    let lit_top = avg(&lit, |s| s.top);
+    let dark_top = avg(&dark, |s| s.top);
+
+    println!("\n  whole frame   lit {lit_mean:6.2}   dark {dark_mean:6.2}   delta {:6.2}", lit_mean - dark_mean);
+    println!("  top decile    lit {lit_top:6.2}   dark {dark_top:6.2}   delta {:6.2}", lit_top - dark_top);
+
+    // Adjacent pairs control for drift: a slow exposure ramp would move both
+    // halves together and inflate a naive difference of group means.
+    let mut pair_deltas: Vec<f32> = Vec::new();
+    for w in samples.windows(2) {
+        if w[0].dark != w[1].dark {
+            let (l, d) = if w[0].dark { (&w[1], &w[0]) } else { (&w[0], &w[1]) };
+            pair_deltas.push(l.top - d.top);
+        }
+    }
+    if pair_deltas.is_empty() {
+        println!("\n  no adjacent lit/dark pairs — the strobe is not alternating frame to frame");
+    } else {
+        let mean_pair = pair_deltas.iter().sum::<f32>() / pair_deltas.len() as f32;
+        let mut sorted = pair_deltas.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        println!(
+            "\n  ADJACENT PAIRS (top decile, drift-controlled)\n    \
+             n={}  mean {:+.2}  min {:+.2}  max {:+.2}",
+            pair_deltas.len(),
+            mean_pair,
+            sorted[0],
+            sorted[sorted.len() - 1]
+        );
+    }
+
+    println!("\n  frames:   {}", out_dir.display());
+    println!("  manifest: {}", manifest.display());
+    println!(
+        "\n  ⚠️  One run is one condition. A delta here means nothing on its own — \
+         \n      run again with --label phone-spoof holding a photo of yourself, and compare."
+    );
+    Ok(())
+}
+
 /// Write a grayscale image as PGM (Portable Gray Map) — no extra deps needed.
 fn save_pgm(path: &std::path::Path, data: &[u8], width: u32, height: u32) -> Result<()> {
     use std::io::Write;
@@ -546,4 +741,59 @@ fn save_pgm(path: &std::path::Path, data: &[u8], width: u32, height: u32) -> Res
     write!(f, "P5\n{width} {height}\n255\n")?;
     f.write_all(data)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The metric must track the BRIGHT REGION, not the frame.
+    ///
+    /// This is the whole reason it exists: a face is roughly a tenth of this
+    /// sensor's field, so a whole-frame mean buries the signal under
+    /// background. If the top decile moved with the background it would be a
+    /// worse version of `avg_brightness` and the strobe measurement built on it
+    /// would be meaningless.
+    #[test]
+    fn the_top_decile_tracks_the_bright_region_and_ignores_the_background() {
+        // 10% at 200, 90% at 10 — a face-sized bright patch on a dark field.
+        let mut frame = vec![10u8; 900];
+        frame.extend(std::iter::repeat(200u8).take(100));
+
+        let whole = frame.iter().map(|&b| b as f32).sum::<f32>() / frame.len() as f32;
+        let top = top_decile_mean(&frame);
+
+        assert!(
+            (top - 200.0).abs() < 1.0,
+            "top decile should be ~200 (the bright patch), got {top}"
+        );
+        assert!(
+            whole < 40.0,
+            "control: the whole-frame mean should be dragged down by background, got {whole}"
+        );
+        assert!(
+            top > whole * 4.0,
+            "the two metrics must actually differ, or this one adds nothing: \
+             top {top} vs whole {whole}"
+        );
+    }
+
+    /// Negative controls: degenerate inputs must not fabricate a reading.
+    #[test]
+    fn the_top_decile_is_honest_about_empty_and_uniform_frames() {
+        assert_eq!(
+            top_decile_mean(&[]),
+            0.0,
+            "an empty frame has no brightness to report"
+        );
+
+        // A uniform frame has no bright region — the answer is that value, not
+        // something higher. A metric that reported more would invent contrast.
+        let flat = vec![77u8; 1000];
+        let top = top_decile_mean(&flat);
+        assert!(
+            (top - 77.0).abs() < 0.001,
+            "a uniform frame's top decile is its own value, got {top}"
+        );
+    }
 }

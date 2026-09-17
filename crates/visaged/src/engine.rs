@@ -512,6 +512,76 @@ fn run_enroll(
 /// Capture frames, detect faces, extract embeddings, compare against gallery.
 /// Uses the best match across all captured frames.
 ///
+/// Time not attributable to any stage this struct measures.
+///
+/// Reported rather than dropped. The whole point of profiling an unattributed
+/// 2.3s is to find where it goes, and an instrument that silently absorbs its
+/// own blind spot would hand back a tidy breakdown that adds up to less than the
+/// clock. If `other_ms` is large, the next stage to instrument is whatever is
+/// hiding in it.
+fn unaccounted(total: std::time::Duration, parts: &[std::time::Duration]) -> std::time::Duration {
+    let summed: std::time::Duration = parts.iter().sum();
+    total.saturating_sub(summed)
+}
+
+/// Per-stage timing for one verify, emitted on EVERY exit path.
+///
+/// `run_verify` has five early returns — two timeouts, no-usable-frames,
+/// no-face, and a liveness rejection. A `tracing` call at the bottom of the
+/// function would be skipped by all of them, and a FAILED authentication is
+/// precisely when the breakdown matters: "it took 2.3s and then rejected you"
+/// is the complaint, not the success case. A drop guard also cannot be bypassed
+/// by an early return somebody adds later.
+///
+/// Emitted at INFO so it lands in the journal under the shipped
+/// `RUST_LOG=visaged=info`, which makes every real `sudo` a profiling sample
+/// under real conditions — better evidence than a synthetic benchmark that
+/// warms differently.
+struct VerifyTiming {
+    start: std::time::Instant,
+    capture: std::time::Duration,
+    detect: std::time::Duration,
+    detect_n: usize,
+    extract: std::time::Duration,
+    extract_n: usize,
+    frames: usize,
+    dark_skipped: usize,
+}
+
+impl VerifyTiming {
+    fn start() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            capture: std::time::Duration::ZERO,
+            detect: std::time::Duration::ZERO,
+            detect_n: 0,
+            extract: std::time::Duration::ZERO,
+            extract_n: 0,
+            frames: 0,
+            dark_skipped: 0,
+        }
+    }
+}
+
+impl Drop for VerifyTiming {
+    fn drop(&mut self) {
+        let total = self.start.elapsed();
+        let other = unaccounted(total, &[self.capture, self.detect, self.extract]);
+        tracing::info!(
+            total_ms = total.as_millis() as u64,
+            capture_ms = self.capture.as_millis() as u64,
+            detect_ms = self.detect.as_millis() as u64,
+            detect_n = self.detect_n,
+            extract_ms = self.extract.as_millis() as u64,
+            extract_n = self.extract_n,
+            other_ms = other.as_millis() as u64,
+            frames = self.frames,
+            dark_skipped = self.dark_skipped,
+            "verify timing"
+        );
+    }
+}
+
 /// When `liveness_enabled` is true, collects eye landmarks across all frames
 /// and runs a passive stability check before accepting a match. Static images
 /// (photographs) produce near-identical landmarks and are rejected.
@@ -528,12 +598,16 @@ fn run_verify(
     liveness_enabled: bool,
     liveness_min_displacement: f32,
 ) -> Result<VerifyResult, EngineError> {
+    let mut timing = VerifyTiming::start();
+
     if std::time::Instant::now() > deadline {
         return Err(EngineError::VerifyTimeout);
     }
 
     activate_emitter(emitter);
+    let t_capture = std::time::Instant::now();
     let capture_result = camera.capture_frames(frames_count);
+    timing.capture = t_capture.elapsed();
     deactivate_emitter(emitter);
 
     if std::time::Instant::now() > deadline {
@@ -541,6 +615,8 @@ fn run_verify(
     }
 
     let (frames, dark_skipped) = capture_result?;
+    timing.frames = frames.len();
+    timing.dark_skipped = dark_skipped;
     tracing::debug!(
         captured = frames.len(),
         dark_skipped,
@@ -558,7 +634,10 @@ fn run_verify(
     let mut landmark_sequence: Vec<[(f32, f32); 5]> = Vec::new();
 
     for frame in &frames {
+        let t_detect = std::time::Instant::now();
         let faces = detector.detect(&frame.data, frame.width, frame.height)?;
+        timing.detect += t_detect.elapsed();
+        timing.detect_n += 1;
         let Some(face) = faces.first() else {
             continue;
         };
@@ -569,7 +648,14 @@ fn run_verify(
             landmark_sequence.push(landmarks);
         }
 
+        // NOTE: this runs on EVERY frame while only the best result survives.
+        // With frames_per_verify=3 that is three ArcFace extractions per auth,
+        // two of them discarded. `extract_n` in the timing line makes the waste
+        // visible in production rather than only in a code review.
+        let t_extract = std::time::Instant::now();
         let embedding = recognizer.extract(&frame.data, frame.width, frame.height, face)?;
+        timing.extract += t_extract.elapsed();
+        timing.extract_n += 1;
         let result = matcher.compare(&embedding, gallery, threshold);
 
         let is_better = match &best_result {
@@ -634,6 +720,38 @@ fn run_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unattributed time must be REPORTED, not absorbed.
+    ///
+    /// The point of profiling a 2.3s verify is to find where it goes. An
+    /// instrument whose stages quietly sum to less than the clock hands back a
+    /// tidy breakdown and hides its own blind spot.
+    #[test]
+    fn unaccounted_time_is_reported_and_never_underflows() {
+        use std::time::Duration;
+
+        let total = Duration::from_millis(2273);
+        let parts = [Duration::from_millis(200), Duration::from_millis(900)];
+        assert_eq!(
+            unaccounted(total, &parts),
+            Duration::from_millis(1173),
+            "the gap between the clock and the measured stages is the finding"
+        );
+
+        // Saturating, not panicking. Stage timers are taken with separate
+        // Instants, so rounding or a re-entrant call could make the parts
+        // exceed the total — and `Duration` subtraction underflow PANICS.
+        // A profiler that can crash the authentication path is worse than no
+        // profiler.
+        assert_eq!(
+            unaccounted(Duration::from_millis(10), &[Duration::from_millis(50)]),
+            Duration::ZERO,
+            "overlong parts must clamp to zero, never underflow"
+        );
+
+        // Degenerate: nothing measured means everything is unattributed.
+        assert_eq!(unaccounted(total, &[]), total);
+    }
 
     /// The self-heal re-open must arm ONLY on camera-broken outcomes — never on a
     /// genuine no-face / unknown-user, a verify timeout, a liveness rejection, or a
